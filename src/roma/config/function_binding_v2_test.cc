@@ -20,19 +20,18 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include <linux/limits.h>
-
 #include <functional>
 #include <memory>
 #include <string>
 #include <tuple>
 #include <vector>
 
-#include <libplatform/libplatform.h>
-
+#include "absl/container/flat_hash_map.h"
 #include "absl/functional/bind_front.h"
 #include "absl/log/check.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
+#include "include/libplatform/libplatform.h"
 #include "include/v8.h"
 #include "src/roma/config/function_binding_object_v2.h"
 #include "src/roma/config/type_converter.h"
@@ -120,6 +119,11 @@ class FunctionBindingTest : public ::testing::Test {
     platform_ = v8::platform::NewDefaultPlatform().release();
     v8::V8::InitializePlatform(platform_);
     v8::V8::Initialize();
+  }
+
+  static void TearDownTestSuite() {
+    v8::V8::Dispose();
+    v8::V8::DisposePlatform();
   }
 
   void SetUp() override {

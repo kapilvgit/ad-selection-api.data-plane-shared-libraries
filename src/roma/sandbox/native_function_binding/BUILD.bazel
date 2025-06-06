@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@rules_buf//buf:defs.bzl", "buf_lint_test")
 load("@rules_cc//cc:defs.bzl", "cc_library", "cc_proto_library", "cc_test")
 load("@rules_proto//proto:defs.bzl", "proto_library")
 
 package(default_visibility = [
+    "//src/roma/byob:__subpackages__",
     "//src/roma/native_function_grpc_server:__subpackages__",
     "//src/roma/roma_service:__subpackages__",
     "//src/roma/sandbox/js_engine/v8_engine:__subpackages__",
@@ -28,32 +30,48 @@ proto_library(
     deps = ["//src/roma/interface:function_binding_io_proto"],
 )
 
+buf_lint_test(
+    name = "rpc_wrapper_proto_lint",
+    size = "small",
+    config = "//src:buf.yaml",
+    targets = [":rpc_wrapper_proto"],
+)
+
 cc_proto_library(
     name = "rpc_wrapper_cc_proto",
     deps = [":rpc_wrapper_proto"],
 )
 
-cc_library(
+alias(
     name = "native_function_binding",
-    hdrs = ["native_function_invoker.h"],
-    deps = [
-        "//src/roma/interface:function_binding_io_cc_proto",
-        "@com_google_absl//absl/status",
-    ],
+    actual = ":native_function_invoker",
 )
 
 cc_library(
-    name = "native_function_invoker_sapi_ipc",
-    srcs = ["native_function_invoker_sapi_ipc.cc"],
-    hdrs = ["native_function_invoker_sapi_ipc.h"],
+    name = "native_function_handler",
+    hdrs = ["native_function_handler.h"],
+    defines = select({
+        "//:non_sapi_build": ["NON_SAPI_BUILD"],
+        "//conditions:default": [],
+    }),
+    deps = select({
+        "//:non_sapi_build": [":native_function_handler_non_sapi"],
+        "//conditions:default": [":native_function_handler_sapi_ipc"],
+    }),
+)
+
+cc_library(
+    name = "native_function_invoker",
+    srcs = select({
+        "//:non_sapi_build": ["native_function_invoker_non_sapi.cc"],
+        "//conditions:default": ["native_function_invoker_sapi_ipc.cc"],
+    }),
+    hdrs = ["native_function_invoker.h"],
     deps = [
-        ":native_function_binding",
         ":rpc_wrapper_cc_proto",
-        "//src/roma/interface:function_binding_io_cc_proto",
         "//src/roma/sandbox/constants",
         "@com_google_absl//absl/status",
-        "@com_google_sandboxed_api//sandboxed_api:sapi",
-        "@com_google_sandboxed_api//sandboxed_api:vars",
+        "@com_google_sandboxed_api//sandboxed_api/sandbox2:comms",
     ],
 )
 
@@ -64,6 +82,7 @@ cc_library(
     ],
     deps = [
         "//src/roma/config",
+        "//src/roma/config:function_binding_object_v2",
         "//src/roma/interface:function_binding_io_cc_proto",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/synchronization",
@@ -78,16 +97,28 @@ cc_library(
     deps = [
         ":native_function_table",
         ":rpc_wrapper_cc_proto",
-        "//src/core/interface",
-        "//src/roma/config",
-        "//src/roma/interface:function_binding_io_cc_proto",
+        "//src/roma/interface",
         "//src/roma/logging",
         "//src/roma/metadata_storage",
         "//src/roma/sandbox/constants",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/synchronization",
-        "@com_google_sandboxed_api//sandboxed_api:sapi",
-        "@com_google_sandboxed_api//sandboxed_api:vars",
+        "//src/util:execution_token",
+        "@com_google_sandboxed_api//sandboxed_api/sandbox2:comms",
+    ],
+)
+
+cc_library(
+    name = "native_function_handler_non_sapi",
+    hdrs = [
+        "native_function_handler_non_sapi.h",
+    ],
+    deps = [
+        ":native_function_table",
+        ":rpc_wrapper_cc_proto",
+        "//src/roma/interface",
+        "//src/roma/logging",
+        "//src/roma/metadata_storage",
+        "//src/roma/sandbox/constants",
+        "//src/util:execution_token",
     ],
 )
 
@@ -95,10 +126,33 @@ cc_test(
     name = "native_function_handler_sapi_ipc_test",
     size = "small",
     srcs = ["native_function_handler_sapi_ipc_test.cc"],
+    target_compatible_with = select({
+        "//:non_sapi_build": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
     deps = [
         ":native_function_handler_sapi_ipc",
-        "//src/core/test/utils",
-        "//src/roma/sandbox/constants",
+        ":native_function_table",
+        ":rpc_wrapper_cc_proto",
+        "//src/roma/metadata_storage",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_sandboxed_api//sandboxed_api/sandbox2:comms",
+    ],
+)
+
+cc_test(
+    name = "native_function_handler_non_sapi_test",
+    size = "small",
+    srcs = ["native_function_handler_non_sapi_test.cc"],
+    target_compatible_with = select({
+        "//:non_sapi_build": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [
+        ":native_function_handler_non_sapi",
+        ":native_function_table",
+        ":rpc_wrapper_cc_proto",
+        "//src/roma/metadata_storage",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -107,11 +161,29 @@ cc_test(
     name = "native_function_invoker_sapi_ipc_test",
     size = "small",
     srcs = ["native_function_invoker_sapi_ipc_test.cc"],
+    target_compatible_with = select({
+        "//:non_sapi_build": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
     deps = [
-        ":native_function_invoker_sapi_ipc",
-        "//src/core/test/utils",
-        "//src/roma/sandbox/constants",
-        "@com_google_absl//absl/status",
+        ":native_function_invoker",
+        ":rpc_wrapper_cc_proto",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_sandboxed_api//sandboxed_api/sandbox2:comms",
+    ],
+)
+
+cc_test(
+    name = "native_function_invoker_non_sapi_test",
+    size = "small",
+    srcs = ["native_function_invoker_non_sapi_test.cc"],
+    target_compatible_with = select({
+        "//:non_sapi_build": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [
+        ":native_function_invoker",
+        ":rpc_wrapper_cc_proto",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -121,7 +193,7 @@ cc_test(
     size = "small",
     srcs = ["native_function_table_test.cc"],
     deps = [
-        ":native_function_handler_sapi_ipc",
+        ":native_function_table",
         "@com_google_absl//absl/status",
         "@com_google_googletest//:gtest_main",
     ],

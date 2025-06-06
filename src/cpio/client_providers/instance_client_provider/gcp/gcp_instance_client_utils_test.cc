@@ -24,6 +24,7 @@
 #include "absl/strings/substitute.h"
 #include "src/cpio/client_providers/instance_client_provider/gcp/error_codes.h"
 #include "src/cpio/client_providers/instance_client_provider/mock/mock_instance_client_provider.h"
+#include "src/public/core/interface/execution_result.h"
 #include "src/public/core/test_execution_result_matchers.h"
 
 using google::scp::core::ExecutionResult;
@@ -68,8 +69,7 @@ TEST(GcpInstanceClientUtilsTest, GetCurrentProjectIdSuccess) {
 
 TEST(GcpInstanceClientUtilsTest, GetCurrentProjectIdFailedWithResourceName) {
   MockInstanceClientProvider instance_client;
-  instance_client.get_instance_resource_name_mock =
-      FailureExecutionResult(SC_UNKNOWN);
+  instance_client.get_instance_resource_name_mock = absl::UnknownError("");
 
   auto project_id =
       GcpInstanceClientUtils::GetCurrentProjectId(instance_client);
@@ -185,6 +185,7 @@ INSTANTIATE_TEST_SUITE_P(
             R"("//compute.googleapis.com/projects/PROJECT_ID/regions/REGION/subnetworks/"
                 "SUBNETWORK")",
             "REGION-"),
+        std::make_tuple(R"(BAD_INPUT/regions)", ""),
         std::make_tuple(
             R"("//iam.googleapis.com/projects/PROJECT_ID/serviceAccounts/"
                 "SERVICE_ACCOUNT_EMAIL")",

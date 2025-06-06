@@ -19,17 +19,12 @@
 
 #include <memory>
 
+#include "absl/time/time.h"
 #include "src/core/interface/http_client_interface.h"
 
 namespace google::scp::core::http2_client::mock {
 class MockHttpClient : public HttpClientInterface {
  public:
-  ExecutionResult Init() noexcept override { return SuccessExecutionResult(); };
-
-  ExecutionResult Run() noexcept override { return SuccessExecutionResult(); };
-
-  ExecutionResult Stop() noexcept override { return SuccessExecutionResult(); };
-
   ExecutionResult PerformRequest(
       AsyncContext<HttpRequest, HttpResponse>& context) noexcept override {
     return PerformRequest(context, kHttpRequestTimeout);

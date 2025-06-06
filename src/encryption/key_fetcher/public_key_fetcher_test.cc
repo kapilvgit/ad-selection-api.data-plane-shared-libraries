@@ -19,6 +19,7 @@
 #include <string>
 #include <utility>
 
+#include "absl/status/status.h"
 #include "include/gtest/gtest.h"
 #include "src/encryption/key_fetcher/key_fetcher_utils.h"
 #include "src/public/core/interface/execution_result.h"
@@ -27,27 +28,28 @@
 namespace privacy_sandbox::server_common {
 namespace {
 
-using google::scp::core::ExecutionResult;
-using google::scp::core::FailureExecutionResult;
-using google::scp::core::SuccessExecutionResult;
-using testing::IsEmpty;
+using ::google::scp::core::ExecutionResult;
+using ::google::scp::core::FailureExecutionResult;
+using ::google::scp::core::SuccessExecutionResult;
+using ::testing::ContainsRegex;
+using ::testing::IsEmpty;
 
 class MockPublicKeyClient : public google::scp::cpio::PublicKeyClientInterface {
  public:
-  ExecutionResult init_result_mock = SuccessExecutionResult();
+  absl::Status init_result_mock = absl::OkStatus();
 
-  ExecutionResult Init() noexcept override { return init_result_mock; }
+  absl::Status Init() noexcept override { return init_result_mock; }
 
-  ExecutionResult run_result_mock = SuccessExecutionResult();
+  absl::Status run_result_mock = absl::OkStatus();
 
-  ExecutionResult Run() noexcept override { return run_result_mock; }
+  absl::Status Run() noexcept override { return run_result_mock; }
 
-  ExecutionResult stop_result_mock = SuccessExecutionResult();
+  absl::Status stop_result_mock = absl::OkStatus();
 
-  ExecutionResult Stop() noexcept override { return stop_result_mock; }
+  absl::Status Stop() noexcept override { return stop_result_mock; }
 
   MOCK_METHOD(
-      ExecutionResult, ListPublicKeys,
+      absl::Status, ListPublicKeys,
       (google::cmrt::sdk::public_key_service::v1::ListPublicKeysRequest request,
        google::scp::cpio::Callback<
            google::cmrt::sdk::public_key_service::v1::ListPublicKeysResponse>
@@ -78,20 +80,18 @@ TEST(PublicKeyFetcherTest, SuccessfulRefresh) {
   EXPECT_CALL(*mock_public_key_client_gcp, ListPublicKeys)
       .WillOnce(
           [&](ListPublicKeysRequest request,
-              google::scp::cpio::Callback<ListPublicKeysResponse> callback)
-              -> ExecutionResult {
+              google::scp::cpio::Callback<ListPublicKeysResponse> callback) {
             callback(SuccessExecutionResult(), response);
-            return SuccessExecutionResult();
+            return absl::OkStatus();
           });
 
   EXPECT_CALL(*mock_public_key_client_aws, ListPublicKeys)
       .WillOnce(
           [&](ListPublicKeysRequest request,
-              google::scp::cpio::Callback<ListPublicKeysResponse> callback)
-              -> ExecutionResult {
+              google::scp::cpio::Callback<ListPublicKeysResponse> callback) {
             ListPublicKeysResponse empty_response;
             callback(SuccessExecutionResult(), empty_response);
-            return SuccessExecutionResult();
+            return absl::OkStatus();
           });
 
   absl::flat_hash_map<
@@ -108,7 +108,10 @@ TEST(PublicKeyFetcherTest, SuccessfulRefresh) {
   EXPECT_TRUE(result_status.ok());
 
   std::vector<PublicPrivateKeyPairId> key_pair_ids;
-  key_pair_ids.push_back(ToOhttpKeyId(response.public_keys().at(0).key_id()));
+  absl::StatusOr<std::string> ohttp_key_id =
+      ToOhttpKeyId(response.public_keys().at(0).key_id());
+  ASSERT_TRUE(ohttp_key_id.ok());
+  key_pair_ids.push_back(*std::move(ohttp_key_id));
   EXPECT_EQ(fetcher.GetKeyIds(CloudPlatform::kGcp), key_pair_ids);
 }
 
@@ -119,8 +122,9 @@ TEST(PublicKeyFetcherTest, SyncReturnsIfExecutionFailsSinglePlatform) {
   EXPECT_CALL(*mock_public_key_client, ListPublicKeys)
       .WillOnce(
           [&](ListPublicKeysRequest request,
-              google::scp::cpio::Callback<ListPublicKeysResponse> callback)
-              -> ExecutionResult { return FailureExecutionResult(0); });
+              google::scp::cpio::Callback<ListPublicKeysResponse> callback) {
+            return absl::UnknownError("");
+          });
 
   absl::flat_hash_map<
       CloudPlatform,
@@ -144,8 +148,9 @@ TEST(PublicKeyFetcherTest, SyncReturnsIfExecutionFailsMultiPlatform) {
   EXPECT_CALL(*mock_public_key_client_gcp, ListPublicKeys)
       .WillOnce(
           [&](ListPublicKeysRequest request,
-              google::scp::cpio::Callback<ListPublicKeysResponse> callback)
-              -> ExecutionResult { return FailureExecutionResult(0); });
+              google::scp::cpio::Callback<ListPublicKeysResponse> callback) {
+            return absl::UnknownError("");
+          });
 
   PublicKey key;
   key.set_key_id("key_id");
@@ -157,10 +162,9 @@ TEST(PublicKeyFetcherTest, SyncReturnsIfExecutionFailsMultiPlatform) {
       .WillOnce(
           [aws_response = response](
               ListPublicKeysRequest request,
-              google::scp::cpio::Callback<ListPublicKeysResponse> callback)
-              -> ExecutionResult {
+              google::scp::cpio::Callback<ListPublicKeysResponse> callback) {
             callback(SuccessExecutionResult(), aws_response);
-            return SuccessExecutionResult();
+            return absl::OkStatus();
           });
 
   absl::flat_hash_map<
@@ -177,7 +181,10 @@ TEST(PublicKeyFetcherTest, SyncReturnsIfExecutionFailsMultiPlatform) {
   EXPECT_TRUE(result_status.ok());
 
   std::vector<PublicPrivateKeyPairId> key_pair_ids;
-  key_pair_ids.push_back(ToOhttpKeyId(response.public_keys().at(0).key_id()));
+  absl::StatusOr<std::string> ohttp_key_id =
+      ToOhttpKeyId(response.public_keys().at(0).key_id());
+  ASSERT_TRUE(ohttp_key_id.ok());
+  key_pair_ids.push_back(*std::move(ohttp_key_id));
   EXPECT_EQ(fetcher.GetKeyIds(CloudPlatform::kAws), key_pair_ids);
 }
 
@@ -197,19 +204,17 @@ TEST(PublicKeyFetcherTest, FailedAsyncListPublicKeysCall) {
       .WillOnce(
           [gcp_response = response](
               ListPublicKeysRequest request,
-              google::scp::cpio::Callback<ListPublicKeysResponse> callback)
-              -> ExecutionResult {
+              google::scp::cpio::Callback<ListPublicKeysResponse> callback) {
             callback(FailureExecutionResult(0), gcp_response);
-            return SuccessExecutionResult();
+            return absl::OkStatus();
           });
   EXPECT_CALL(*mock_public_key_client_aws, ListPublicKeys)
       .WillOnce(
           [aws_response = response](
               ListPublicKeysRequest request,
-              google::scp::cpio::Callback<ListPublicKeysResponse> callback)
-              -> ExecutionResult {
+              google::scp::cpio::Callback<ListPublicKeysResponse> callback) {
             callback(FailureExecutionResult(0), aws_response);
-            return SuccessExecutionResult();
+            return absl::OkStatus();
           });
   absl::flat_hash_map<
       CloudPlatform,
@@ -228,7 +233,7 @@ TEST(PublicKeyFetcherTest, FailedAsyncListPublicKeysCall) {
   EXPECT_THAT(fetcher.GetKeyIds(CloudPlatform::kAws), IsEmpty());
 }
 
-TEST(PublicKeyFetcherTest, VerifyGetKeyReturnsRandomKey) {
+TEST(PublicKeyFetcherTest, GetKey_ReturnsRandomKey) {
   std::unique_ptr<MockPublicKeyClient> mock_public_key_client =
       std::make_unique<MockPublicKeyClient>();
 
@@ -247,10 +252,9 @@ TEST(PublicKeyFetcherTest, VerifyGetKeyReturnsRandomKey) {
   EXPECT_CALL(*mock_public_key_client, ListPublicKeys)
       .WillOnce(
           [&](ListPublicKeysRequest request,
-              google::scp::cpio::Callback<ListPublicKeysResponse> callback)
-              -> ExecutionResult {
+              google::scp::cpio::Callback<ListPublicKeysResponse> callback) {
             callback(SuccessExecutionResult(), response);
-            return SuccessExecutionResult();
+            return absl::OkStatus();
           });
 
   absl::flat_hash_map<
@@ -272,6 +276,116 @@ TEST(PublicKeyFetcherTest, VerifyGetKeyReturnsRandomKey) {
   }
 
   FAIL();
+}
+
+TEST(PublicKeyFetcherTest, GetKeys_ErrorOnKeysNotFetchedForCloudPlatform) {
+  std::unique_ptr<MockPublicKeyClient> mock_public_key_client =
+      std::make_unique<MockPublicKeyClient>();
+
+  ListPublicKeysResponse response;
+  PublicKey key;
+  key.set_key_id("00000000");
+  key.set_public_key("key_pubkey");
+  response.mutable_public_keys()->Add({std::move(key)});
+
+  EXPECT_CALL(*mock_public_key_client, ListPublicKeys)
+      .WillOnce(
+          [&](ListPublicKeysRequest request,
+              google::scp::cpio::Callback<ListPublicKeysResponse> callback) {
+            callback(SuccessExecutionResult(), response);
+            return absl::OkStatus();
+          });
+
+  absl::flat_hash_map<
+      CloudPlatform,
+      std::unique_ptr<google::scp::cpio::PublicKeyClientInterface>>
+      public_key_clients;
+  public_key_clients[CloudPlatform::kGcp] = std::move(mock_public_key_client);
+
+  PublicKeyFetcher fetcher(std::move(public_key_clients));
+  absl::Status result_status = fetcher.Refresh();
+
+  // Expect an error when fetching an AWS key.
+  absl::StatusOr<PublicKey> error = fetcher.GetKey(CloudPlatform::kAws);
+  ASSERT_TRUE(!error.ok());
+  EXPECT_THAT(error.status().message(),
+              ContainsRegex("No public keys to return for cloud platform AWS"));
+}
+
+TEST(PublicKeyFetcherTest, GetKeys_ErrorOnNoKeysForAnyCloudPlatforms) {
+  std::unique_ptr<MockPublicKeyClient> mock_public_key_client =
+      std::make_unique<MockPublicKeyClient>();
+
+  ListPublicKeysResponse response;
+  EXPECT_CALL(*mock_public_key_client, ListPublicKeys)
+      .WillOnce(
+          [&](ListPublicKeysRequest request,
+              google::scp::cpio::Callback<ListPublicKeysResponse> callback) {
+            callback(SuccessExecutionResult(), response);
+            return absl::OkStatus();
+          });
+
+  absl::flat_hash_map<
+      CloudPlatform,
+      std::unique_ptr<google::scp::cpio::PublicKeyClientInterface>>
+      public_key_clients;
+  public_key_clients[CloudPlatform::kGcp] = std::move(mock_public_key_client);
+
+  PublicKeyFetcher fetcher(std::move(public_key_clients));
+  absl::Status result_status = fetcher.Refresh();
+
+  absl::StatusOr<PublicKey> error = fetcher.GetKey(CloudPlatform::kGcp);
+  ASSERT_TRUE(!error.ok());
+  EXPECT_THAT(error.status().message(),
+              ContainsRegex("No public keys cached for any cloud platforms"));
+}
+
+TEST(PublicKeyFetcherTest, Refresh_KeepsCachedKeysOnEmptyKeyFetchResponse) {
+  std::unique_ptr<MockPublicKeyClient> mock_public_key_client =
+      std::make_unique<MockPublicKeyClient>();
+
+  ListPublicKeysResponse first_response_with_keys, empty_response;
+  std::vector<PublicKey> keys;
+  PublicKey key;
+  key.set_key_id("00000000");
+  key.set_public_key("key_pubkey");
+  keys.push_back(key);
+
+  first_response_with_keys.mutable_public_keys()->Add(keys.begin(), keys.end());
+
+  EXPECT_CALL(*mock_public_key_client, ListPublicKeys)
+      .WillOnce(
+          [&](ListPublicKeysRequest request,
+              google::scp::cpio::Callback<ListPublicKeysResponse> callback) {
+            callback(SuccessExecutionResult(), first_response_with_keys);
+            return absl::OkStatus();
+          })
+      .WillOnce(
+          [&](ListPublicKeysRequest request,
+              google::scp::cpio::Callback<ListPublicKeysResponse> callback) {
+            callback(SuccessExecutionResult(), empty_response);
+            return absl::OkStatus();
+          });
+
+  absl::flat_hash_map<
+      CloudPlatform,
+      std::unique_ptr<google::scp::cpio::PublicKeyClientInterface>>
+      public_key_clients;
+  public_key_clients[CloudPlatform::kGcp] = std::move(mock_public_key_client);
+
+  PublicKeyFetcher fetcher(std::move(public_key_clients));
+  absl::Status first_refresh = fetcher.Refresh();
+  ASSERT_TRUE(first_refresh.ok());
+  absl::StatusOr<PublicKey> first_key = fetcher.GetKey(CloudPlatform::kGcp);
+  ASSERT_TRUE(first_key.ok());
+
+  absl::Status second_refresh = fetcher.Refresh();
+  ASSERT_TRUE(second_refresh.ok());
+  absl::StatusOr<PublicKey> second_key = fetcher.GetKey(CloudPlatform::kGcp);
+  ASSERT_TRUE(second_key.ok());
+
+  ASSERT_EQ(first_key->key_id(), second_key->key_id());
+  ASSERT_EQ(first_key->public_key(), second_key->public_key());
 }
 
 }  // namespace

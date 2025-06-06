@@ -26,6 +26,7 @@
 #include "absl/random/random.h"
 #include "absl/strings/ascii.h"
 #include "absl/strings/str_cat.h"
+#include "src/public/core/interface/execution_result.h"
 #include "src/util/duration.h"
 
 #include "error_codes.h"
@@ -94,7 +95,9 @@ ExecutionResult FromString(std::string_view uuid_string, Uuid& uuid) noexcept {
     uuid.high |= (ReadHex(uuid_string, offset) << shift);
     switch (shift) {
       case 32:
+        [[fallthrough]];
       case 16:
+        [[fallthrough]];
       case 0:
         offset += 3;
         break;

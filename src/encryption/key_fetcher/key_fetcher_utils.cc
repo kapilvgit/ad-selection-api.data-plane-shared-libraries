@@ -18,14 +18,18 @@
 
 namespace privacy_sandbox::server_common {
 
-std::string ToOhttpKeyId(std::string_view key_id) {
-  int32_t ohttp_key_id;
-  int32_t out;
+absl::StatusOr<std::string> ToOhttpKeyId(std::string_view key_id) {
+  if (key_id.length() < 2) {
+    return absl::InvalidArgumentError(
+        "Key ID less than 2 characters long - unable to parse as valid OHTTP "
+        "key ID");
+  }
 
+  int32_t out;
   // Key ID is hex encoded. Left shift first char by 4 and OR with the second
   // char.
   (void)absl::SimpleHexAtoi(std::string{key_id.at(0)}, &out);
-  ohttp_key_id = out << 4;
+  int32_t ohttp_key_id = out << 4;
 
   int32_t out2;
   (void)absl::SimpleHexAtoi(std::string{key_id.at(1)}, &out2);

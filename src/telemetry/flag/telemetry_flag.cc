@@ -14,7 +14,9 @@
 
 #include "src/telemetry/flag/telemetry_flag.h"
 
+#include "absl/random/random.h"
 #include "absl/strings/str_cat.h"
+#include "absl/synchronization/mutex.h"
 #include "google/protobuf/text_format.h"
 
 namespace privacy_sandbox::server_common::telemetry {
@@ -63,8 +65,25 @@ BuildDependentConfig::BuildDependentConfig(TelemetryConfig config)
     server_config_.set_dp_export_interval_ms(
         server_config_.metric_export_interval_ms());
   }
+  absl::BitGen bitgen;
+  server_config_.set_dp_export_interval_ms(
+      server_config_.dp_export_interval_ms() * absl::Uniform(bitgen, 1, 1.1));
+
   for (const MetricConfig& m : server_config_.metric()) {
     metric_config_.emplace(m.name(), m);
+  }
+  for (const auto& m : server_config_.custom_udf_metric()) {
+    auto metric = SetCustomConfig(m);
+    if (!metric.ok()) {
+      if (metric.code() == absl::StatusCode::kAlreadyExists ||
+          metric.code() == absl::StatusCode::kOutOfRange) {
+        ABSL_LOG(ERROR) << metric.message();
+        continue;
+      } else {
+        ABSL_LOG(ERROR) << metric.message();
+        break;
+      }
+    }
   }
 }
 
@@ -124,23 +143,123 @@ absl::Status BuildDependentConfig::CheckMetricConfig(
   return ret.empty() ? absl::OkStatus() : absl::InvalidArgumentError(ret);
 }
 
-// Override the public partition of a metric.
 void BuildDependentConfig::SetPartition(
-    std::string_view name, absl::Span<const std::string_view> partitions) {
+    std::string_view name, absl::Span<const std::string_view> partitions)
+    ABSL_LOCKS_EXCLUDED(partition_mutex_) {
+  absl::MutexLock lock(&partition_mutex_);
+  SetPartitionWithMutex(name, partitions);
+}
+
+void BuildDependentConfig::SetPartitionWithMutex(
+    std::string_view name, absl::Span<const std::string_view> partitions)
+    ABSL_EXCLUSIVE_LOCKS_REQUIRED(partition_mutex_) {
   auto& saved = *internal_config_[name].mutable_public_partitions();
   saved.Assign(partitions.begin(), partitions.end());
   absl::c_sort(saved);
   partition_config_view_[name] = {saved.begin(), saved.end()};
 }
 
-absl::Span<const std::string_view> BuildDependentConfig::GetPartition(
+int BuildDependentConfig::GetMaxPartitionsContributed(
     const metrics::internal::Partitioned& definition,
-    const std::string_view name) const {
-  auto it = partition_config_view_.find(name);
-  if (it == partition_config_view_.end()) {
-    return definition.public_partitions_;
+    absl::string_view name) const ABSL_LOCKS_EXCLUDED(partition_mutex_) {
+  {
+    absl::MutexLock lock(&partition_mutex_);
+    auto it = internal_config_.find(name);
+    if (it != internal_config_.end() &&
+        it->second.has_max_partitions_contributed()) {
+      return it->second.max_partitions_contributed();
+    }
   }
-  return it->second;
+  absl::StatusOr<MetricConfig> metric_config = GetMetricConfig(name);
+  if (metric_config.ok() && metric_config->has_max_partitions_contributed()) {
+    return metric_config->max_partitions_contributed();
+  }
+  return definition.max_partitions_contributed_;
 }
 
+void BuildDependentConfig::SetMaxPartitionsContributed(
+    std::string_view name, int max_partitions_contributed)
+    ABSL_LOCKS_EXCLUDED(partition_mutex_) {
+  absl::MutexLock lock(&partition_mutex_);
+  internal_config_[name].set_max_partitions_contributed(
+      max_partitions_contributed);
+}
+
+absl::Status BuildDependentConfig::SetCustomConfig(const MetricConfig& proto)
+    ABSL_LOCKS_EXCLUDED(partition_mutex_) {
+  absl::MutexLock lock(&partition_mutex_);
+  if (!(absl::IsNotFound(GetCustomDefinition(proto.name()).status()) &&
+        absl::IsNotFound(
+            GetCustomHistogramDefinition(proto.name()).status()))) {
+    return absl::AlreadyExistsError(
+        absl::StrCat(proto.name(), " has already been defined"));
+  }
+
+  if (proto.histogram_boundaries_size() <= 0) {
+    for (const auto* kCustom : server_common::metrics::kCustomList) {
+      if (internal_config_.find(kCustom->name_) == internal_config_.end()) {
+        SetInternalConfig(internal_config_, proto, kCustom->name_);
+        custom_def_map_[proto.name()] = kCustom;
+        return absl::OkStatus();
+      }
+    }
+    return absl::OutOfRangeError(
+        "max number of custom partitioned metrics has been reached");
+  } else {
+    for (const auto* kCustom : server_common::metrics::kCustomHistogramList) {
+      if (internal_config_.find(kCustom->name_) == internal_config_.end()) {
+        SetInternalConfig(internal_config_, proto, kCustom->name_);
+        custom_histogram_def_map_[proto.name()] = kCustom;
+        return absl::OkStatus();
+      }
+    }
+    return absl::OutOfRangeError(
+        "max number of custom histogram metrics has been reached");
+  }
+}
+
+std::string BuildDependentConfig::GetName(
+    const metrics::DefinitionName& definition) const {
+  absl::MutexLock lock(&partition_mutex_);
+  auto it = internal_config_.find(definition.name_);
+  if (it != internal_config_.end() && it->second.has_name()) {
+    return it->second.name();
+  } else {
+    return std::string(definition.name_);
+  }
+}
+
+std::string BuildDependentConfig::GetDescription(
+    const metrics::DefinitionName& definition) const {
+  absl::MutexLock lock(&partition_mutex_);
+  auto it = internal_config_.find(definition.name_);
+  if (it != internal_config_.end() && it->second.has_description()) {
+    return it->second.description();
+  } else {
+    return std::string(definition.description_);
+  }
+}
+
+std::string BuildDependentConfig::GetPartitionType(
+    const metrics::internal::Partitioned& definition,
+    absl::string_view name) const {
+  absl::MutexLock lock(&partition_mutex_);
+  auto it = internal_config_.find(name);
+  if (it != internal_config_.end() && it->second.has_partition_type()) {
+    return it->second.partition_type();
+  }
+  return std::string(definition.partition_type_);
+}
+
+absl::Span<const double> BuildDependentConfig::GetHistogramBoundaries(
+    const metrics::internal::Histogram& definition,
+    absl::string_view name) const {
+  absl::MutexLock lock(&partition_mutex_);
+  auto it = internal_config_.find(name);
+  if (it != internal_config_.end() &&
+      (it->second.histogram_boundaries_size() > 0)) {
+    return it->second.histogram_boundaries();
+  }
+  return definition.histogram_boundaries_;
+}
 }  // namespace privacy_sandbox::server_common::telemetry

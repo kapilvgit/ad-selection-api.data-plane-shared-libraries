@@ -23,6 +23,7 @@
 #include "src/core/common/global_logger/global_logger.h"
 #include "src/core/common/uuid/uuid.h"
 #include "src/cpio/common/aws/error_codes.h"
+#include "src/public/core/interface/execution_result.h"
 
 #include "error_codes.h"
 
@@ -53,11 +54,14 @@ FailureExecutionResult EC2ErrorConverter::ConvertEC2Error(
       failure = FailureExecutionResult(SC_AWS_INVALID_CREDENTIALS);
       break;
     case EC2Errors::INVALID_PARAMETER_COMBINATION:
+      [[fallthrough]];
     case EC2Errors::INVALID_QUERY_PARAMETER:
+      [[fallthrough]];
     case EC2Errors::INVALID_PARAMETER_VALUE:
       failure = FailureExecutionResult(SC_AWS_INVALID_REQUEST);
       break;
     case EC2Errors::SERVICE_UNAVAILABLE:
+      [[fallthrough]];
     case EC2Errors::NETWORK_CONNECTION:
       failure = FailureExecutionResult(SC_AWS_SERVICE_UNAVAILABLE);
       break;
@@ -65,6 +69,7 @@ FailureExecutionResult EC2ErrorConverter::ConvertEC2Error(
       failure = FailureExecutionResult(SC_AWS_REQUEST_LIMIT_REACHED);
       break;
     case EC2Errors::INTERNAL_FAILURE:
+      [[fallthrough]];
     default:
       failure = FailureExecutionResult(SC_AWS_INTERNAL_SERVICE_ERROR);
   }

@@ -25,9 +25,9 @@
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/functional/any_invocable.h"
-#include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "src/roma/config/config.h"
+#include "absl/time/time.h"
+#include "src/roma/config/function_binding_object_v2.h"
 
 namespace google::scp::roma {
 /// @brief The key of timeout tag for request. This tag should be set with a
@@ -126,6 +126,8 @@ struct ResponseObject {
   std::string id;
   // The response of the execution.
   std::string resp;
+  // the output from V8's Heap and Sample-based CPU profiler
+  std::string profiler_output;
   // Execution metrics. Any key should be checked for existence.
   absl::flat_hash_map<std::string, absl::Duration> metrics;
 };
@@ -133,9 +135,9 @@ struct ResponseObject {
 using Callback = absl::AnyInvocable<void(absl::StatusOr<ResponseObject>)>;
 
 // Batch API
-// void Callback(const vector<ResponseObject>&);
-using BatchCallback = absl::AnyInvocable<void(
-    const std::vector<absl::StatusOr<ResponseObject>>&)>;
+// void Callback(vector<ResponseObject>);
+using BatchCallback =
+    absl::AnyInvocable<void(std::vector<absl::StatusOr<ResponseObject>>)>;
 }  // namespace google::scp::roma
 
 #endif  // ROMA_INTERFACE_ROMA_H_

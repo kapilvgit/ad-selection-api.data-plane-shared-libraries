@@ -22,6 +22,7 @@
 #include <utility>
 
 #include "absl/time/clock.h"
+#include "absl/time/time.h"
 #include "src/concurrent/mocks.h"
 
 namespace privacy_sandbox::server_common {
@@ -121,7 +122,7 @@ TEST(EventEngineExecutorTest, CancelUsesEventEngine) {
         return true;
       });
 
-  EXPECT_TRUE(class_under_test.Cancel(std::move(id)));
+  EXPECT_TRUE(class_under_test.Cancel(id));
 }
 
 }  // namespace

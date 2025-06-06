@@ -14,34 +14,45 @@
 
 """Initialize the shared control plane dependencies."""
 
+load("@aspect_rules_esbuild//esbuild:repositories.bzl", "LATEST_ESBUILD_VERSION", "esbuild_register_toolchains")
+load("@aspect_rules_js//js:repositories.bzl", "rules_js_dependencies")
+load("@aspect_rules_ts//ts:repositories.bzl", "LATEST_TYPESCRIPT_VERSION", "rules_ts_dependencies")
+load("@bazel_features//:deps.bzl", "bazel_features_deps")
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
+load("@emsdk//:deps.bzl", emsdk_deps = "deps")
+load("@rules_python//python:repositories.bzl", "py_repositories")
 load("//build_defs/cc:sdk_source_code.bzl", scp_sdk_dependencies = "sdk_dependencies")
-load("//third_party:emscripten_deps1.bzl", "emscripten_deps1")
 
 def _bazel_deps():
-    http_archive(
-        name = "aspect_bazel_lib",
-        sha256 = "f5ea76682b209cc0bd90d0f5a3b26d2f7a6a2885f0c5f615e72913f4805dbb0d",
-        strip_prefix = "bazel-lib-2.5.0",
-        urls = ["https://github.com/aspect-build/bazel-lib/releases/download/v2.5.0/bazel-lib-v2.5.0.tar.gz"],
-    )
+    bazel_features_deps()
     maybe(
         http_archive,
-        name = "rules_oci",
-        sha256 = "4a276e9566c03491649eef63f27c2816cc222f41ccdebd97d2c5159e84917c3b",
-        strip_prefix = "rules_oci-1.7.4",
-        url = "https://github.com/bazel-contrib/rules_oci/releases/download/v1.7.4/rules_oci-v1.7.4.tar.gz",
+        name = "rules_license",
+        sha256 = "4182989d6eea74f42059ad9930854e49c1808737b177ab31aac56978891b61b8",
+        strip_prefix = "rules_license-1.0.0",
+        urls = [
+            "https://github.com/bazelbuild/rules_license/archive/refs/tags/1.0.0.zip",
+        ],
+    )
+
+def _js_deps():
+    rules_ts_dependencies(ts_version = LATEST_TYPESCRIPT_VERSION)
+    rules_js_dependencies()
+    emsdk_deps()
+    esbuild_register_toolchains(
+        name = "esbuild",
+        esbuild_version = LATEST_ESBUILD_VERSION,
     )
 
 def _absl_deps():
     maybe(
         http_archive,
         name = "com_google_absl",
-        # commit f845e60 2023-12-05
-        sha256 = "b1e113eaf442b817f2a9e3bb471cb36129cd456dd999b0e0360fa891f177013b",
-        strip_prefix = "abseil-cpp-f845e60acd880dbf07788a5a2c0dbad0f9c57231",
-        urls = ["https://github.com/abseil/abseil-cpp/archive/f845e60acd880dbf07788a5a2c0dbad0f9c57231.zip"],
+        # commit e83ef279 2024-11-06
+        sha256 = "950869f55ffcfc316abd2213137de058664234ce6466514c8c80f7b5b30695ab",
+        strip_prefix = "abseil-cpp-e83ef279682c46a0f8009a8f0727241693e96233",
+        urls = ["https://github.com/abseil/abseil-cpp/archive/e83ef279682c46a0f8009a8f0727241693e96233.zip"],
     )
 
     # use an older version of absl only for //src/aws/proxy:all. This is
@@ -64,9 +75,33 @@ def _rust_deps():
         urls = ["https://github.com/bazelbuild/rules_rust/releases/download/0.31.0/rules_rust-v0.31.0.tar.gz"],
     )
 
+def _dwyu_deps():
+    maybe(
+        http_archive,
+        name = "depend_on_what_you_use",
+        patches = [Label("//third_party:depend_on_what_you_use.patch")],
+        sha256 = "b56cdfaed0d74967fefb54bdd3f05bd167c4c4ebaa2a67af962d969e6a51962b",
+        strip_prefix = "depend_on_what_you_use-0.3.0",
+        urls = ["https://github.com/martis42/depend_on_what_you_use/releases/download/0.3.0/depend_on_what_you_use-0.3.0.tar.gz"],
+    )
+
+def _graalvm_deps():
+    maybe(
+        http_archive,
+        name = "rules_graalvm",
+        strip_prefix = "rules_graalvm-0.11.2",
+        sha256 = "49bfa3851b6a1f76e5c18727adf6b0bb61af24ba2566bf75a724ddbca0c2c183",
+        urls = [
+            "https://github.com/sgammon/rules_graalvm/releases/download/v0.11.2/rules_graalvm-0.11.2.tgz",
+        ],
+    )
+
 def deps1():
     _bazel_deps()
     _absl_deps()
     _rust_deps()
+    _dwyu_deps()
+    _graalvm_deps()
     scp_sdk_dependencies()
-    emscripten_deps1()
+    _js_deps()
+    py_repositories()

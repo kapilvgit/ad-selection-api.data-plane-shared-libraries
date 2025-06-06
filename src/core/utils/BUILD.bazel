@@ -23,7 +23,6 @@ cc_library(
         "error_utils.cc",
         "hashing.cc",
         "http.cc",
-        "string_util.cc",
     ],
     hdrs = [
         "base64.h",
@@ -31,7 +30,6 @@ cc_library(
         "error_utils.h",
         "hashing.h",
         "http.h",
-        "string_util.h",
     ],
     deps = [
         "//src/core/interface",
@@ -51,12 +49,12 @@ cc_test(
         "base64_test.cc",
         "error_utils_test.cc",
         "hashing_test.cc",
-        "string_util_test.cc",
     ],
     deps = [
         ":core_utils",
         "//src/core/interface",
         "//src/public/core:test_execution_result_matchers",
+        "//src/public/core/interface:execution_result",
         "@com_google_googletest//:gtest_main",
     ],
 )

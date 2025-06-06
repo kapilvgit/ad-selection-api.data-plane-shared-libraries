@@ -29,7 +29,13 @@
 1. Build and create a tar archive for the base Docker image.
 
     ```shell
-    builders/tools/bazel-debian build //src/public/cpio/validator:aws_nitro_enclaves_validator_image.tar
+    builders/tools/bazel-debian build //src/public/cpio/validator:aws_nitro_enclaves_validator_tarball
+    ```
+
+    Copy it to your to the distribution directory, `dist/aws`:
+
+    ```shell
+    builders/tools/bazel-debian run //src/public/cpio/validator:copy_to_dist
     ```
 
     Upload it to an EC2 instance and load the image. To load the image:
@@ -48,7 +54,7 @@
 1. Run the validator using the script. Example:
 
     ```shell
-    ./build_and_run_validator_enclave --docker-image-uri bazel/src/public/cpio/validator:aws_nitro_enclaves_validator_image --validator-conf ./validator_config.txtpb
+    ./build_and_run_validator_enclave --docker-image-uri bazel/src/public/cpio/validator:aws_nitro_enclaves_validator --validator-conf ./validator_config.txtpb
     ```
 
 #### Sample validation report
@@ -80,7 +86,7 @@ VPC environment is incorrectly set up.
 
 ### AWS Troubleshooting
 
-#### Reenable Nitro Service
+#### Re-enable Nitro Service
 
 ```shell
 sudo systemctl enable --now nitro-enclaves-allocator.service
@@ -103,7 +109,7 @@ Please
 the configured CPU pool size.
 
 Please update your `/etc/nitro_enclaves/allocator.yaml` file to 2 or more CPU counts, then
-[reenable the nitro service.](#reenable-nitro-service)
+[re-enable the nitro service.](#re-enable-nitro-service)
 
 #### E27
 
@@ -111,7 +117,7 @@ Please update your `/etc/nitro_enclaves/allocator.yaml` file to 2 or more CPU co
 available hugepage memory.
 
 Please update your `/etc/nitro_enclaves/allocator.yaml` file to have memory higher than 1500 MB,
-then [reenable the nitro service.](#reenable-nitro-service)
+then [re-enable the nitro service.](#re-enable-nitro-service)
 
 #### E26
 
@@ -119,4 +125,4 @@ then [reenable the nitro service.](#reenable-nitro-service)
 size, the minimum memory should be 800 MB
 
 Please update your `/etc/nitro_enclaves/allocator.yaml` file to have memory higher than 1500 MB,
-then [reenable the nitro service.](#reenable-nitro-service)
+then [re-enable the nitro service.](#re-enable-nitro-service)

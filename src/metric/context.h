@@ -33,6 +33,7 @@
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "src/metric/definition.h"
+#include "src/metric/udf.pb.h"
 #include "src/telemetry/flag/telemetry_flag.h"
 #include "src/util/status_macro/status_macros.h"
 
@@ -41,6 +42,9 @@ namespace privacy_sandbox::server_common::metrics {
 inline constexpr int kLogStandardFreqSec = 60;
 inline constexpr int kLogLowFreqSec = kLogStandardFreqSec * 10;
 inline constexpr std::string_view kDefaultGenerationId = "not_consented";
+inline constexpr const DefinitionName* custom_metric_list[] = {
+    &kCustom1,          &kCustom2,          &kCustom3,
+    &kCustomHistogram1, &kCustomHistogram2, &kCustomHistogram3};
 
 /*
 One context will be created for one request, used to log metric. It will use
@@ -48,14 +52,14 @@ One context will be created for one request, used to log metric. It will use
 request is not decrypted.
 
 To log metric call one of the `Log***<definition>(value)`, definition is a
-definition that is in `L`.
+definition that is in `definition_list`.
 
 Examples:
 LogUpDownCounter<kSafeCounter>(1);
 LogUpDownCounter<kSafePartitionedCounter>({{"buyer_1", 1}, {"buyer_2", 1}});
 
-To initialize, `L` is the list of Definition* that can be logged. `U` is the
-thread-safe metric_router implementing following 2 templated methods:
+To initialize, `definition_list` is the list of Definition* that can be logged.
+`U` is the thread-safe metric_router implementing following 2 templated methods:
   template <typename T, Privacy privacy, Instrument instrument>
   absl::Status LogSafe(const Definition<T, privacy, instrument>& definition,
                        T value,
@@ -65,8 +69,8 @@ thread-safe metric_router implementing following 2 templated methods:
                          T value,
                          std::string_view partition);
 */
-template <const absl::Span<const DefinitionName* const>& L, typename U,
-          bool safe_metric_only = false>
+template <const absl::Span<const DefinitionName* const>& definition_list,
+          typename U, bool safe_metric_only = false>
 class Context {
  public:
   // Constructed here only, `is_debug`=true will log everything as safe.
@@ -139,7 +143,7 @@ class Context {
     request_state_.result = std::move(s);
   }
 
-  const absl::Status& request_result() ABSL_LOCKS_EXCLUDED(mutex_) {
+  absl::Status request_result() ABSL_LOCKS_EXCLUDED(mutex_) {
     absl::MutexLock mutex_lock(&mutex_);
     return request_state_.result;
   }
@@ -216,27 +220,115 @@ class Context {
     return LogMetricDeferred<definition>(std::forward<T>(callback));
   }
 
+  // Log UDF Metrics
+  absl::Status LogUDFMetrics(const BatchUDFMetric& metrics) {
+    absl::Status status;
+    std::string not_found;
+    for (const auto& metric : metrics.udf_metric()) {
+      absl::StatusOr<
+          const metrics::Definition<double, metrics::Privacy::kImpacting,
+                                    metrics::Instrument::kPartitionedCounter>*>
+          definition_partition =
+              metric_router_->metric_config().GetCustomDefinition(
+                  metric.name());
+      absl::StatusOr<
+          const metrics::Definition<double, metrics::Privacy::kImpacting,
+                                    metrics::Instrument::kHistogram>*>
+          definition_histogram =
+              metric_router_->metric_config().GetCustomHistogramDefinition(
+                  metric.name());
+      if (!definition_partition.ok() && !definition_histogram.ok()) {
+        not_found += metric.name() + ",";
+        continue;
+      }
+      if (definition_partition.ok()) {
+        if (absl::Status temp_status =
+                LogPartitionedUDF(*definition_partition, metric.value(),
+                                  metric.public_partition());
+            !temp_status.ok()) {
+          status = temp_status;
+        }
+      } else {
+        if (absl::Status temp_status =
+                LogHistogramUDF(*definition_histogram, metric.value());
+            !temp_status.ok()) {
+          status = temp_status;
+        }
+      }
+    }
+    if (not_found != "") {
+      not_found.pop_back();
+      status = absl::NotFoundError(absl::StrCat("name not found: ", not_found));
+    }
+    return status;
+  }
+
+  absl::Status LogPartitionedUDF(
+      const metrics::Definition<double, metrics::Privacy::kImpacting,
+                                metrics::Instrument::kPartitionedCounter>*
+          definition,
+      double value, std::string_view partition) {
+    if (definition == &kCustom1) {
+      return AccumulateMetric<kCustom1>(value, partition);
+    }
+    if (definition == &kCustom2) {
+      return AccumulateMetric<kCustom2>(value, partition);
+    }
+    if (definition == &kCustom3) {
+      return AccumulateMetric<kCustom3>(value, partition);
+    }
+    return absl::UnimplementedError("Not Implemented");
+  }
+
+  absl::Status LogHistogramUDF(
+      const metrics::Definition<double, metrics::Privacy::kImpacting,
+                                metrics::Instrument::kHistogram>* definition,
+      double value) {
+    if (definition == &kCustomHistogram1) {
+      return AccumulateMetric<kCustomHistogram1>(value);
+    }
+    if (definition == &kCustomHistogram2) {
+      return AccumulateMetric<kCustomHistogram2>(value);
+    }
+    if (definition == &kCustomHistogram3) {
+      return AccumulateMetric<kCustomHistogram3>(value);
+    }
+    return absl::UnimplementedError("Not Implemented");
+  }
+
   // Accumulate metric values, they can be accumulated multiple times during
   // context life time. They will be aggregated and logged at destruction.
   // Metrics must be Privacy::kImpacting.
+  // When report_mean is false, accumulate the values. Otherwise calculate the
+  // average, and log the average value at destruction.
   template <const auto& definition, typename T>
   absl::Status AccumulateMetric(
-      T value, std::string_view partition = "",
+      T value, std::string_view partition = "", bool report_mean = false,
       std::enable_if_t<std::is_arithmetic_v<T>>* = nullptr) {
     CheckDefinition<definition, T>();
+    PS_RETURN_IF_ERROR(CheckDefinedMetricConfig(definition));
     // TODO(b/291336238): Uncomment this static check when marking initiated
     // requests unsafe. static_assert(definition.type_privacy ==
     // Privacy::kImpacting);
     absl::MutexLock mutex_lock(&mutex_);
     auto it = accumulated_metric_.find(&definition);
     if (it != accumulated_metric_.end()) {
-      it->second.values[partition] += value;
+      if (report_mean) {
+        auto& count = it->second.count[partition];
+        ++count;
+        it->second.values[partition] =
+            it->second.values[partition] +
+            (value - it->second.values[partition]) / count;
+      } else {
+        it->second.values[partition] += value;
+      }
       return absl::OkStatus();
     }
     accumulated_metric_.emplace(
         &definition,
         Accumulator{
             typename Accumulator::PartitionedValue({{partition.data(), value}}),
+            /*count=*/{{partition.data(), 1}},
             [this](const typename Accumulator::PartitionedValue& values)
                 -> absl::Status {
               for (auto& [partition, numeric] :
@@ -247,6 +339,15 @@ class Context {
               return absl::OkStatus();
             }});
     return absl::OkStatus();
+  }
+
+  // Aggregate metric values and calculate average,  the average value will be
+  // logged at destruction of context
+  template <const auto& definition, typename T>
+  absl::Status AggregateMetricToGetMean(
+      T value, std::string_view partition = "",
+      std::enable_if_t<std::is_arithmetic_v<T>>* = nullptr) {
+    return AccumulateMetric<definition>(value, partition, true);
   }
 
  private:
@@ -282,6 +383,10 @@ class Context {
             definition.name_, " can only log once for a request."));
       }
     }
+    return absl::OkStatus();
+  }
+
+  absl::Status CheckDefinedMetricConfig(const DefinitionName& definition) {
     return metric_router_->metric_config()
         .GetMetricConfig(definition.name_)
         .status();
@@ -292,11 +397,12 @@ class Context {
     using DefinitionType =
         std::remove_cv_t<std::remove_reference_t<decltype(definition)>>;
     static_assert(std::is_same_v<typename DefinitionType::TypeT, T>,
-                  "value type does not match Metric Defintion");
+                  "value type does not match Metric Definition");
     static_assert(
         std::is_same_v<DefinitionType, Definition<T, definition.type_privacy,
                                                   definition.type_instrument>>);
-    static_assert(IsInList(definition, L));
+    static_assert(IsInList(definition, definition_list) ||
+                  IsInList(definition, custom_metric_list));
     if constexpr (safe_metric_only) {
       static_assert(definition.type_privacy == Privacy::kNonImpacting);
     }
@@ -307,6 +413,7 @@ class Context {
                          std::enable_if_t<std::is_arithmetic_v<T>>* = nullptr) {
     CheckDefinition<definition, T>();
     PS_RETURN_IF_ERROR(AssertLoggable(definition));
+    PS_RETURN_IF_ERROR(CheckDefinedMetricConfig(definition));
     static_assert(definition.type_instrument !=
                   Instrument::kPartitionedCounter);
     return LogMetricInternal(value, definition, "");
@@ -318,6 +425,7 @@ class Context {
   absl::Status LogMetric(const absl::flat_hash_map<std::string, T>& value) {
     CheckDefinition<definition, T>();
     PS_RETURN_IF_ERROR(AssertLoggable(definition));
+    PS_RETURN_IF_ERROR(CheckDefinedMetricConfig(definition));
     static_assert(definition.type_instrument ==
                   Instrument::kPartitionedCounter);
     for (auto& [partition, numeric] :
@@ -372,6 +480,7 @@ class Context {
     using Result = std::invoke_result_t<T>;
     CheckDefinition<definition, Result>();
     PS_RETURN_IF_ERROR(AssertLoggable(definition));
+    PS_RETURN_IF_ERROR(CheckDefinedMetricConfig(definition));
     return LogMetricDeferredInternal<Result>(
         [callback = std::move(
              callback)]() mutable -> absl::flat_hash_map<std::string, Result> {
@@ -393,6 +502,7 @@ class Context {
                        std::remove_cv_t<Result>>);
     CheckDefinition<definition, typename Result::mapped_type>();
     PS_RETURN_IF_ERROR(AssertLoggable(definition));
+    PS_RETURN_IF_ERROR(CheckDefinedMetricConfig(definition));
     static_assert(definition.type_instrument ==
                   Instrument::kPartitionedCounter);
     return LogMetricDeferredInternal<typename Result::mapped_type>(
@@ -452,18 +562,22 @@ class Context {
       const internal::Partitioned& partitioned, std::string_view name,
       bool is_privacy_impacting) {
     std::vector<std::pair<std::string, T>> ret;
-    if (absl::Span<const std::string_view> public_partitions =
-            metric_router_->metric_config().GetPartition(partitioned, name);
-        !public_partitions.empty()) {
+    int max_partitions_contributed =
+        metric_router_->metric_config().GetMaxPartitionsContributed(partitioned,
+                                                                    name);
+    if (std::unique_ptr<telemetry::BuildDependentConfig::PartitionView>
+            partition_view =
+                metric_router_->metric_config().GetPartition(partitioned, name);
+        !partition_view->view().empty()) {
       for (auto& [partition, numeric] : value) {
-        if (absl::c_binary_search(public_partitions, partition)) {
+        if (absl::c_binary_search(partition_view->view(), partition)) {
           ret.emplace_back(partition, numeric);
         } else {
           ABSL_LOG_EVERY_N_SEC(WARNING, kLogStandardFreqSec)
               << partition << " is not in public_partitions_ ["
               << partitioned.partition_type_ << "] of metric:" << name;
         }
-        if (ret.size() >= partitioned.max_partitions_contributed_) {
+        if (ret.size() >= max_partitions_contributed) {
           break;
         }
       }
@@ -473,13 +587,12 @@ class Context {
       // just return the value; otherwise it is private partition metric that
       // is not implemented yet, log a warning.
       ABSL_LOG_IF_EVERY_N_SEC(
-          WARNING,
-          is_privacy_impacting && partitioned.max_partitions_contributed_ > 1,
+          WARNING, is_privacy_impacting && max_partitions_contributed > 1,
           kLogLowFreqSec)
           << "public_partitions_ not defined for metric : " << name;
       ret.insert(ret.begin(), value.begin(), value.end());
-      if (ret.size() >= partitioned.max_partitions_contributed_) {
-        ret.resize(partitioned.max_partitions_contributed_);
+      if (ret.size() >= max_partitions_contributed) {
+        ret.resize(max_partitions_contributed);
       }
     }
     return ret;
@@ -505,6 +618,7 @@ class Context {
   struct Accumulator {
     using PartitionedValue = absl::flat_hash_map<std::string, double>;
     PartitionedValue values;
+    absl::flat_hash_map<std::string, int> count;
     absl::AnyInvocable<absl::Status(const PartitionedValue&) &&> callback;
   };
 

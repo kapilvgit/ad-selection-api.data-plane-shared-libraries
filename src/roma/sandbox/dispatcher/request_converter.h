@@ -21,6 +21,7 @@
 #include <string>
 #include <utility>
 
+#include "absl/container/flat_hash_map.h"
 #include "src/roma/interface/roma.h"
 #include "src/roma/sandbox/constants/constants.h"
 #include "src/roma/sandbox/worker_api/sapi/worker_params.pb.h"
@@ -61,6 +62,9 @@ template <typename InputType, typename TMetadata>
   if (request.treat_input_as_byte_str) {
     metadata[google::scp::roma::sandbox::constants::kInputType] =
         google::scp::roma::sandbox::constants::kInputTypeBytes;
+    if (request.input.size() != 1) {
+      return params;
+    }
     if constexpr (std::is_same_v<InputType, std::shared_ptr<std::string>>) {
       params.set_input_bytes(*request.input.at(0));
     } else if constexpr (std::is_same_v<InputType, std::string_view>) {

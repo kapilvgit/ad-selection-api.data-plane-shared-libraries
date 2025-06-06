@@ -16,24 +16,21 @@ load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 
 cc_library(
     name = "execution_utils",
-    srcs = [
-        "execution_utils.cc",
-    ],
-    hdrs = [
-        "execution_utils.h",
-    ],
+    srcs = ["execution_utils.cc"],
+    hdrs = ["execution_utils.h"],
     visibility = [
         "//src/roma/sandbox/js_engine:__subpackages__",
     ],
     deps = [
-        "//src/core/interface",
-        "//src/core/interface:type_def",
         "//src/roma/config",
+        "//src/roma/config:type_converter",
         "//src/roma/interface",
         "//src/roma/wasm:deserializer",
         "//src/roma/wasm:serializer",
         "//src/roma/wasm:wasm_types",
+        "//src/util/status_macro:status_builder",
         "//src/util/status_macro:status_macros",
+        "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@v8//:v8_icu",
@@ -49,7 +46,10 @@ cc_library(
     ],
     deps = [
         "//src/util:duration",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/time",
         "@v8//:v8_icu",
     ],
 )
@@ -71,14 +71,14 @@ cc_test(
     ],
     deps = [
         ":execution_utils",
-        "//src/core/test/utils",
-        "//src/roma/wasm:deserializer",
         "//src/roma/wasm:wasm_testing",
-        "//src/roma/wasm:wasm_types",
         "//src/util:process_util",
+        "//src/util/status_macro:status_macros",
         "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_googletest//:gtest_main",
+        "@v8//:v8_icu",
     ],
 )
 
@@ -94,5 +94,6 @@ cc_test(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",
         "@com_google_googletest//:gtest_main",
+        "@v8//:v8_icu",
     ],
 )

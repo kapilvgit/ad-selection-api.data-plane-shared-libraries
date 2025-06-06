@@ -21,10 +21,10 @@
     doesn't have std::filesystem, instead it's in std::experimental
 """
 
-load("@com_github_grpc_grpc//bazel:grpc_build_system.bzl", "grpc_proto_library")
+load("@com_google_googleapis_imports//:imports.bzl", "cc_grpc_library", "cc_proto_library")
 load("@rules_buf//buf:defs.bzl", "buf_lint_test")
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
-load("@rules_oci//oci:defs.bzl", "oci_image", "oci_tarball")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load")
 load("@rules_pkg//pkg:mappings.bzl", "pkg_attributes", "pkg_files")
 load("@rules_pkg//pkg:pkg.bzl", "pkg_tar")
 load("@rules_proto//proto:defs.bzl", "proto_library")
@@ -33,7 +33,6 @@ load("@rules_python//python:defs.bzl", "py_test")
 cc_binary(
     name = "resolv_conf_getter_client",
     srcs = ["resolv_conf_getter_client.cc"],
-    visibility = ["//visibility:public"],
     deps = [
         ":resolv_conf_getter_grpc",
         "@com_github_grpc_grpc//:grpc++",
@@ -47,13 +46,10 @@ cc_binary(
 cc_binary(
     name = "resolv_conf_getter_server",
     srcs = ["resolv_conf_getter_server.cc"],
-    visibility = ["//visibility:public"],
     deps = [
         ":resolv_conf_getter_grpc",
         "@com_github_grpc_grpc//:grpc++",
-        "@com_google_absl//absl/flags:flag",
-        "@com_google_absl//absl/flags:parse",
-        "@com_google_absl//absl/strings",
+        "@com_google_absl_for_proxy//absl/strings",
     ],
 )
 
@@ -62,9 +58,16 @@ proto_library(
     srcs = ["resolv_conf_getter.proto"],
 )
 
-grpc_proto_library(
+cc_proto_library(
+    name = "resolv_conf_getter_cc_proto",
+    deps = [":resolv_conf_getter_proto"],
+)
+
+cc_grpc_library(
     name = "resolv_conf_getter_grpc",
-    srcs = ["resolv_conf_getter.proto"],
+    srcs = [":resolv_conf_getter_proto"],
+    grpc_only = True,
+    deps = [":resolv_conf_getter_cc_proto"],
 )
 
 buf_lint_test(
@@ -76,18 +79,14 @@ buf_lint_test(
 
 pkg_files(
     name = "resolv_conf_getter_server_bin",
-    srcs = [
-        ":resolv_conf_getter_server",
-    ],
+    srcs = [":resolv_conf_getter_server"],
     attributes = pkg_attributes(mode = "0555"),
     prefix = "/opt/google/",
 )
 
 pkg_tar(
     name = "resolv_conf_getter_server_tar",
-    srcs = [
-        ":resolv_conf_getter_server_bin",
-    ],
+    srcs = [":resolv_conf_getter_server_bin"],
 )
 
 oci_image(
@@ -106,22 +105,26 @@ oci_image(
     ],
 )
 
-oci_tarball(
+oci_load(
     name = "resolv_conf_getter_server_debian_tarball",
     image = ":resolv_conf_getter_server_debian_image",
     repo_tags = ["src/aws/proxy:resolv_conf_getter_server_debian"],
 )
 
+filegroup(
+    name = "resolv_conf_getter_server_debian_tarball.tar",
+    srcs = [":resolv_conf_getter_server_debian_tarball"],
+    output_group = "tarball",
+)
+
 genrule(
     name = "copy_to_dist",
-    srcs = [
-        ":resolv_conf_getter_server_debian_tarball",
-    ],
+    srcs = [":resolv_conf_getter_server_debian_tarball.tar"],
     outs = ["copy_to_dist.bin"],
     cmd_bash = """cat << EOF > '$@'
 readonly target_dir=dist/aws
 mkdir -p \\$${target_dir}
-cp $(execpath :resolv_conf_getter_server_debian_tarball) "\\$${target_dir}"
+cp $(execpath :resolv_conf_getter_server_debian_tarball.tar) "\\$${target_dir}"
 EOF""",
     executable = True,
     local = True,
@@ -161,15 +164,11 @@ cc_library(
 cc_library(
     name = "config",
     hdrs = ["config.h"],
-    deps = [
-    ],
 )
 
 cc_library(
     name = "freelist",
     hdrs = ["freelist.h"],
-    deps = [
-    ],
 )
 
 cc_library(
@@ -188,8 +187,6 @@ cc_library(
     name = "protocol",
     srcs = ["protocol.cc"],
     hdrs = ["protocol.h"],
-    deps = [
-    ],
 )
 
 cc_library(
@@ -222,15 +219,11 @@ cc_library(
 cc_library(
     name = "socket_types",
     hdrs = ["socket_types.h"],
-    deps = [
-    ],
 )
 
 cc_library(
     name = "socket_vendor_protocol",
     hdrs = ["socket_vendor_protocol.h"],
-    deps = [
-    ],
 )
 
 cc_library(
@@ -242,6 +235,7 @@ cc_library(
         ":socket_types",
         "@boost//:asio",
         "@com_google_absl_for_proxy//absl/log",
+        "@com_google_absl_for_proxy//absl/log:check",
     ],
 )
 
@@ -333,18 +327,14 @@ cc_binary(
 
 pkg_files(
     name = "proxy_bin",
-    srcs = [
-        ":proxy",
-    ],
+    srcs = [":proxy"],
     attributes = pkg_attributes(mode = "0755"),
     prefix = "/opt/google/proxy",
 )
 
 pkg_tar(
     name = "proxy_tar",
-    srcs = [
-        ":proxy_bin",
-    ],
+    srcs = [":proxy_bin"],
 )
 
 oci_image(
@@ -363,10 +353,17 @@ oci_image(
     ],
 )
 
-oci_tarball(
+oci_load(
     name = "proxy_debian_tarball",
     image = ":proxy_debian_image",
     repo_tags = ["src/aws/proxy:proxy_debian"],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "proxy_debian_tarball.tar",
+    srcs = [":proxy_debian_tarball"],
+    output_group = "tarball",
     visibility = ["//visibility:public"],
 )
 
@@ -383,9 +380,7 @@ pkg_files(
 
 pkg_files(
     name = "proxify_libs",
-    srcs = [
-        "//src/aws/proxy:proxy_preload",
-    ],
+    srcs = [":proxy_preload"],
     attributes = pkg_attributes(mode = "0444"),
     prefix = "/",
 )
@@ -400,9 +395,7 @@ pkg_tar(
 
 pkg_files(
     name = "libnsm_libs",
-    srcs = [
-        "//src/cpio/client_providers/kms_client_provider/aws:libnsm_so",
-    ],
+    srcs = ["//src/cpio/client_providers/kms_client_provider/aws:libnsm_so"],
     attributes = pkg_attributes(mode = "0444"),
     prefix = "/usr/lib/x86_64-linux-gnu/",
 )
@@ -414,9 +407,7 @@ pkg_tar(
         ":proxify_executables",
         ":proxify_libs",
     ],
-    visibility = [
-        "//visibility:public",  # Leave as public for KV server.
-    ],
+    visibility = ["//visibility:public"],  # Leave as public for KV server.
 )
 
 cc_test(
@@ -567,8 +558,12 @@ cc_test(
 cc_test(
     name = "client_session_pool_test",
     size = "medium",
+    timeout = "short",
     srcs = ["client_session_pool_test.cc"],
-    tags = ["noasan"],  # TODO(b/315002386) - Fix ASAN errors in this test.
+    tags = [
+        "manual",  # TODO(b/315002386) - Fix test flakiness.
+        "noasan",  # TODO(b/315002386) - Fix ASAN errors in this test.
+    ],
     deps = [
         ":client_session_pool",
         ":socket_vendor_protocol",

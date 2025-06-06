@@ -54,6 +54,10 @@ using DefinitionHistogram =
     Definition<int, Privacy::kNonImpacting, Instrument::kHistogram>;
 using DefinitionGauge =
     Definition<int, Privacy::kNonImpacting, Instrument::kGauge>;
+using DefinitionCustom =
+    Definition<double, Privacy::kImpacting, Instrument::kPartitionedCounter>;
+using DefinitionCustomHistogram =
+    Definition<double, Privacy::kImpacting, Instrument::kHistogram>;
 
 inline constexpr DefinitionSafe kIntExactCounter("kIntExactCounter", "");
 inline constexpr DefinitionSafe kIntExactCounter2("kIntExactCounter2", "");
@@ -73,7 +77,6 @@ inline constexpr DefinitionPartitionUnsafe kIntUnSafePartitioned(
 inline constexpr DefinitionPartitionUnsafe kIntUnSafePrivatePartitioned(
     "kIntUnSafePrivatePartitioned", "", "buyer_name", 5, kEmptyPublicPartition,
     1, 1);
-
 inline constexpr double hb[] = {50, 100, 200};
 inline constexpr DefinitionHistogram kIntExactHistogram("kIntExactHistogram",
                                                         "", hb);
@@ -91,8 +94,9 @@ inline constexpr absl::Span<const DefinitionName* const> metric_list_span =
 class MockMetricRouter {
  public:
   MOCK_METHOD(absl::Status, LogSafe,
-              ((const DefinitionSafe&), int, std::string_view,
-               (absl::flat_hash_map<std::string, std::string>)));
+              (/*definition=*/(const DefinitionSafe&), /*value=*/int,
+               /*partition=*/std::string_view,
+               /*attributes=*/(absl::flat_hash_map<std::string, std::string>)));
   MOCK_METHOD(absl::Status, LogSafe,
               ((const DefinitionUnSafe&), int, std::string_view,
                (absl::flat_hash_map<std::string, std::string>)));
@@ -120,7 +124,17 @@ class MockMetricRouter {
               ((const DefinitionHistogram&), int, std::string_view));
   MOCK_METHOD(absl::Status, LogUnSafe,
               ((const DefinitionGauge&), int, std::string_view));
-  MOCK_METHOD(const telemetry::BuildDependentConfig&, metric_config, ());
+  MOCK_METHOD(telemetry::BuildDependentConfig&, metric_config, ());
+  MOCK_METHOD(absl::Status, LogUnSafe,
+              ((const DefinitionCustom&), double, std::string_view));
+  MOCK_METHOD(absl::Status, LogSafe,
+              ((const DefinitionCustom&), double, std::string_view,
+               (absl::flat_hash_map<std::string, std::string>)));
+  MOCK_METHOD(absl::Status, LogUnSafe,
+              ((const DefinitionCustomHistogram&), double, std::string_view));
+  MOCK_METHOD(absl::Status, LogSafe,
+              ((const DefinitionCustomHistogram&), double, std::string_view,
+               (absl::flat_hash_map<std::string, std::string>)));
 };
 
 class BaseTest : public ::testing::Test {
@@ -128,6 +142,48 @@ class BaseTest : public ::testing::Test {
   void InitConfig(telemetry::TelemetryConfig::TelemetryMode mode) {
     telemetry::TelemetryConfig config_proto;
     config_proto.set_mode(mode);
+    auto* proto1 = config_proto.add_custom_udf_metric();
+    auto* proto2 = config_proto.add_custom_udf_metric();
+    auto* proto3 = config_proto.add_custom_udf_metric();
+    auto* proto_h1 = config_proto.add_custom_udf_metric();
+    auto* proto_h2 = config_proto.add_custom_udf_metric();
+    auto* proto_h3 = config_proto.add_custom_udf_metric();
+
+    proto1->set_name("udf_1");
+    proto1->set_description("log_1");
+    proto1->set_upper_bound(1);
+    proto1->set_lower_bound(0);
+    proto1->add_public_partitions("p_1");
+
+    proto2->set_name("udf_2");
+    proto2->set_description("log_2");
+    proto2->set_upper_bound(2);
+    proto2->set_lower_bound(0);
+    proto2->add_public_partitions("p_2");
+    proto2->add_public_partitions("p_3");
+
+    proto3->set_name("udf_3");
+    proto3->set_description("log_3");
+    proto3->set_upper_bound(1);
+    proto3->set_lower_bound(0);
+
+    proto_h1->set_name("udf_h1");
+    proto_h1->set_description("log_h1");
+    proto_h1->set_upper_bound(5);
+    proto_h1->set_lower_bound(0);
+    proto_h1->add_histogram_boundaries(0);
+    proto_h1->add_histogram_boundaries(5);
+    proto_h1->add_histogram_boundaries(10);
+
+    proto_h2->set_name("udf_h2");
+    proto_h2->set_description("log_h2");
+    proto_h2->add_histogram_boundaries(0);
+    proto_h2->add_histogram_boundaries(0.5);
+
+    proto_h3->set_name("udf_h3");
+    proto_h3->set_description("log_h3");
+    proto_h3->add_histogram_boundaries(1);
+
     metric_config_ =
         std::make_unique<telemetry::BuildDependentConfig>(config_proto);
     EXPECT_CALL(mock_metric_router_, metric_config())
@@ -212,7 +268,7 @@ class ContextTest : public BaseTest {
 
 class MetricConfigTest : public ::testing::Test {
  protected:
-  void SetUpWithConfig(const telemetry::BuildDependentConfig& metric_config) {
+  void SetUpWithConfig(telemetry::BuildDependentConfig& metric_config) {
     EXPECT_CALL(mock_metric_router_, metric_config())
         .WillRepeatedly(ReturnRef(metric_config));
     context_ = Context<metric_list_span, MockMetricRouter>::GetContext(

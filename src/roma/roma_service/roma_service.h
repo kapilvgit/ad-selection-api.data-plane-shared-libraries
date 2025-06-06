@@ -19,26 +19,23 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
 
-#include "absl/base/thread_annotations.h"
-#include "absl/synchronization/mutex.h"
-#include "src/core/async_executor/async_executor.h"
-#include "src/core/interface/service_interface.h"
 #include "src/core/os/linux/system_resource_info_provider_linux.h"
-#include "src/public/core/interface/execution_result.h"
 #include "src/roma/logging/logging.h"
 #include "src/roma/metadata_storage/metadata_storage.h"
 #include "src/roma/native_function_grpc_server/native_function_grpc_server.h"
 #include "src/roma/native_function_grpc_server/request_handlers.h"
 #include "src/roma/sandbox/constants/constants.h"
 #include "src/roma/sandbox/dispatcher/dispatcher.h"
-#include "src/roma/sandbox/native_function_binding/native_function_handler_sapi_ipc.h"
+#include "src/roma/sandbox/native_function_binding/native_function_handler.h"
 #include "src/roma/sandbox/native_function_binding/native_function_table.h"
+#include "src/util/execution_token.h"
 #include "src/util/status_macro/status_macros.h"
 
 using google::scp::core::os::linux::SystemResourceInfoProviderLinux;
@@ -46,7 +43,7 @@ using google::scp::roma::FunctionBindingObjectV2;
 using google::scp::roma::sandbox::constants::kRequestUuid;
 using google::scp::roma::sandbox::dispatcher::Dispatcher;
 using google::scp::roma::sandbox::native_function_binding::
-    NativeFunctionHandlerSapiIpc;
+    NativeFunctionHandler;
 using google::scp::roma::sandbox::native_function_binding::NativeFunctionTable;
 
 namespace google::scp::roma::sandbox::roma_service {
@@ -55,17 +52,20 @@ constexpr int kWorkerQueueMax = 100;
 // This value does not account for runtime memory usage and is only a generic
 // estimate based on the memory needed by roma and the steady-state memory
 // needed by v8.
-constexpr uint64_t kDefaultMinStartupMemoryNeededPerWorkerKb = 400 * 1024;
+constexpr uint64_t kDefaultMinStartupMemoryNeededPerWorkerKB = 400 * 1024;
+constexpr uint64_t kMinWorkerVirtualMemoryMB = 10 * 1024;  // 10 GB
 
 /**
  * @brief The template parameter, TMetadata, needs to be default assignable and
  * movable.
  */
-template <typename TMetadata = google::scp::roma::DefaultMetadata>
+template <typename T = google::scp::roma::DefaultMetadata>
 class RomaService {
  public:
-  explicit RomaService(Config<TMetadata> config = Config<TMetadata>())
-      : config_(std::move(config)) {}
+  using TMetadata = T;
+  using Config = Config<TMetadata>;
+
+  explicit RomaService(Config config = Config()) : config_(std::move(config)) {}
 
   // RomaService is neither copyable nor movable.
   RomaService(const RomaService&) = delete;
@@ -75,6 +75,13 @@ class RomaService {
     if (!RomaHasEnoughMemoryForStartup()) {
       return absl::InternalError(
           "Roma startup failed due to insufficient system memory.");
+    }
+    if (!RomaWorkersHaveEnoughAddressSpace()) {
+      return absl::InternalError(absl::StrCat(
+          "Roma startup failed due to insufficient address space for workers. "
+          "Please increase config.max_worker_virtual_memory_mb above ",
+          kMinWorkerVirtualMemoryMB, " MB. Current value is ",
+          config_.max_worker_virtual_memory_mb, " MB."));
     }
     PS_RETURN_IF_ERROR(InitInternal());
     return absl::OkStatus();
@@ -93,7 +100,7 @@ class RomaService {
   // Execute single invocation request. Can only be called when a valid
   // code object has been loaded.
   template <typename InputType>
-  absl::Status Execute(
+  absl::StatusOr<ExecutionToken> Execute(
       std::unique_ptr<InvocationRequest<InputType, TMetadata>> invocation_req,
       Callback callback) {
     // We accept empty request IDs, but we will replace them with a placeholder.
@@ -101,6 +108,11 @@ class RomaService {
       invocation_req->id = kDefaultRomaRequestId;
     }
     return ExecuteInternal(std::move(invocation_req), std::move(callback));
+  }
+
+  void Cancel(const ExecutionToken& token) {
+    native_function_binding_handler_->PreventCallbacks(token);
+    dispatcher_->Cancel(token);
   }
 
   // Async & Batch API.
@@ -137,7 +149,7 @@ class RomaService {
     native_function_binding_handler_->Run();
 
     // TODO: Make max_pending_requests configurable
-    dispatcher_ = std::make_unique<class Dispatcher>(
+    dispatcher_.emplace(
         absl::MakeSpan(workers_),
         concurrency * worker_queue_cap /*max_pending_requests*/);
     ROMA_VLOG(1) << "RomaService Init with " << config_.number_of_workers
@@ -154,7 +166,6 @@ class RomaService {
     }
     if (native_function_server_) {
       native_function_server_->Shutdown();
-      run_server_thread_.join();
     }
     native_function_binding_table_.Clear();
     for (worker_api::WorkerSandboxApi& worker : workers_) {
@@ -163,28 +174,18 @@ class RomaService {
     return absl::OkStatus();
   }
 
-  void RunServer() {
-    LOG(INFO) << "Initializing the server...";
-    native_function_server_->Run();
-  }
-
   void SetupNativeFunctionGrpcServer() {
     native_function_server_addresses_ = {
         absl::StrCat("unix:", std::tmpnam(nullptr), ".sock")};
-    native_function_server_ =
-        std::make_unique<grpc_server::NativeFunctionGrpcServer<TMetadata>>(
-            &metadata_storage_, native_function_server_addresses_);
+    native_function_server_.emplace(&metadata_storage_,
+                                    native_function_server_addresses_);
 
     config_.RegisterService(
         std::make_unique<grpc_server::AsyncLoggingService>(),
         grpc_server::LogHandler<TMetadata>());
-    auto& services = config_.GetServices();
-    for (auto& service : services) {
-      native_function_server_->AddService(service.get());
-    }
-    native_function_server_->AddFactories(config_.GetFactories());
-
-    run_server_thread_ = std::thread(&RomaService::RunServer, this);
+    native_function_server_->AddServices(config_.ReleaseServices());
+    native_function_server_->AddFactories(config_.ReleaseFactories());
+    native_function_server_->Run();
   }
 
   absl::Status StoreMetadata(std::string uuid, TMetadata metadata) {
@@ -230,7 +231,7 @@ class RomaService {
     remote_fds.reserve(concurrency);
     for (int i = 0; i < concurrency; i++) {
       int fd_pair[2];
-      if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fd_pair) != 0) {
+      if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fd_pair) != 0) {
         return absl::InternalError(
             absl::StrCat("Failed to create socket for native function binding "
                          "communication."));
@@ -239,15 +240,18 @@ class RomaService {
       remote_fds.push_back(fd_pair[1]);
     }
 
-    native_function_binding_handler_ =
-        std::make_unique<NativeFunctionHandlerSapiIpc<TMetadata>>(
-            &native_function_binding_table_, &metadata_storage_, local_fds,
-            remote_fds);
+    MetadataStorage<TMetadata>* metadata_ptr = nullptr;
+    if (config_.enable_metadata_storage) {
+      metadata_ptr = &metadata_storage_;
+    }
+    native_function_binding_handler_.emplace(
+        &native_function_binding_table_, metadata_ptr, local_fds, remote_fds,
+        config_.skip_callback_for_cancelled);
 
     NativeFunctionBindingSetup setup{
         .remote_file_descriptors = std::move(remote_fds),
-        .local_file_descriptors = local_fds,
-        .js_function_names = function_names,
+        .local_file_descriptors = std::move(local_fds),
+        .js_function_names = std::move(function_names),
     };
     return setup;
   }
@@ -276,6 +280,8 @@ class RomaService {
       const NativeFunctionBindingSetup& native_binding_setup) {
     const auto& remote_fds = native_binding_setup.remote_file_descriptors;
     const auto& function_names = native_binding_setup.js_function_names;
+    const auto& rpc_method_names = config_.GetRpcMethodNames();
+    const auto& v8_flags = config_.GetV8Flags();
     std::string server_address = native_function_server_addresses_.empty()
                                      ? ""
                                      : native_function_server_addresses_[0];
@@ -289,6 +295,7 @@ class RomaService {
           /*require_preload=*/true,
           /*native_js_function_comms_fd=*/remote_fd,
           /*native_js_function_names=*/function_names,
+          /*rpc_method_names=*/rpc_method_names,
           /*server_address=*/server_address,
           /*max_worker_virtual_memory_mb=*/config_.max_worker_virtual_memory_mb,
           /*js_engine_initial_heap_size_mb=*/
@@ -300,7 +307,12 @@ class RomaService {
           /*sandbox_request_response_shared_buffer_size_mb=*/
           config_.sandbox_request_response_shared_buffer_size_mb,
           /*enable_sandbox_sharing_request_response_with_buffer_only=*/
-          config_.enable_sandbox_sharing_request_response_with_buffer_only);
+          config_.enable_sandbox_sharing_request_response_with_buffer_only,
+          /*v8_flags=*/v8_flags,
+          /*enable_profilers=*/config_.enable_profilers,
+          /*logging_function_set=*/config_.logging_function_set,
+          /*disable_udf_stacktraces_in_response*/
+          config_.disable_udf_stacktraces_in_response);
       PS_RETURN_IF_ERROR(workers_.back().Init());
       PS_RETURN_IF_ERROR(workers_.back().Run());
     }
@@ -325,7 +337,7 @@ class RomaService {
   }
 
   template <typename InputType>
-  absl::Status ExecuteInternal(
+  absl::StatusOr<ExecutionToken> ExecuteInternal(
       std::unique_ptr<InvocationRequest<InputType, TMetadata>> invocation_req,
       Callback callback) {
     PS_RETURN_IF_ERROR(
@@ -347,10 +359,11 @@ class RomaService {
           DeleteMetadata(uuid_str);
         };
 
-    PS_RETURN_IF_ERROR(StoreMetadata(std::move(uuid_str),
-                                     std::move(invocation_req->metadata)));
-    return dispatcher_->Invoke(std::move(*invocation_req),
-                               std::move(callback_wrapper));
+    PS_RETURN_IF_ERROR(
+        StoreMetadata(uuid_str, std::move(invocation_req->metadata)));
+    PS_RETURN_IF_ERROR(dispatcher_->Invoke(std::move(*invocation_req),
+                                           std::move(callback_wrapper)));
+    return ExecutionToken{std::move(uuid_str)};
   }
 
   template <typename InputType>
@@ -368,16 +381,19 @@ class RomaService {
           google::scp::core::common::ToString(request_unique_id);
       // Save uuids for later removal in callback_wrapper
       uuids.push_back(uuid_str);
-      request.tags.insert({std::string(kRequestUuid), uuid_str});
+      auto [it, inserted] =
+          request.tags.insert({std::string(kRequestUuid), uuid_str});
+      if (!inserted) {
+        it->second = uuid_str;
+      }
       PS_RETURN_IF_ERROR(
           StoreMetadata(std::move(uuid_str), std::move(request.metadata)));
     }
     auto batch_callback_ptr = std::make_shared<BatchCallback>(
         [&, uuids = std::move(uuids),
          batch_callback = std::move(batch_callback)](
-            const std::vector<absl::StatusOr<ResponseObject>>&
-                batch_resp) mutable {
-          std::move(batch_callback)(batch_resp);
+            std::vector<absl::StatusOr<ResponseObject>> batch_resp) mutable {
+          std::move(batch_callback)(std::move(batch_resp));
           for (const auto& uuid : uuids) {
             DeleteMetadata(uuid);
           }
@@ -393,7 +409,7 @@ class RomaService {
         (*batch_response)[index] = std::move(obj_response);
         auto finished_value = finished_counter->fetch_add(1);
         if (finished_value + 1 == batch_response->size()) {
-          (*batch_callback_ptr)(*batch_response);
+          (*batch_callback_ptr)(std::move(*batch_response));
         }
       };
       absl::Status result;
@@ -406,6 +422,13 @@ class RomaService {
       }
     }
     return absl::OkStatus();
+  }
+
+  // V8 fails to initialize if Roma workers aren't given at least
+  // kMinWorkerVirtualMemoryMB of address space.
+  bool RomaWorkersHaveEnoughAddressSpace() {
+    return config_.max_worker_virtual_memory_mb == 0 ||
+           config_.max_worker_virtual_memory_mb >= kMinWorkerVirtualMemoryMB;
   }
 
   bool RomaHasEnoughMemoryForStartup() {
@@ -436,7 +459,7 @@ class RomaService {
     ROMA_VLOG(1) << "Number of workers is " << num_processes;
 
     auto minimum_memory_needed =
-        num_processes * kDefaultMinStartupMemoryNeededPerWorkerKb;
+        num_processes * kDefaultMinStartupMemoryNeededPerWorkerKB;
 
     return minimum_memory_needed < *available_memory;
   }
@@ -451,20 +474,18 @@ class RomaService {
     }
   }
 
-  Config<TMetadata> config_;
+  Config config_;
   std::vector<worker_api::WorkerSandboxApi> workers_;
   native_function_binding::NativeFunctionTable<TMetadata>
       native_function_binding_table_;
   // Map of invocation request uuid to associated metadata.
   MetadataStorage<TMetadata> metadata_storage_;
-  std::shared_ptr<
-      native_function_binding::NativeFunctionHandlerSapiIpc<TMetadata>>
+  std::optional<NativeFunctionHandler<TMetadata>>
       native_function_binding_handler_;
-  std::unique_ptr<dispatcher::Dispatcher> dispatcher_;
+  std::optional<dispatcher::Dispatcher> dispatcher_;
   std::vector<std::string> native_function_server_addresses_;
-  std::unique_ptr<grpc_server::NativeFunctionGrpcServer<TMetadata>>
+  std::optional<grpc_server::NativeFunctionGrpcServer<TMetadata>>
       native_function_server_;
-  std::thread run_server_thread_;
 };
 }  // namespace google::scp::roma::sandbox::roma_service
 

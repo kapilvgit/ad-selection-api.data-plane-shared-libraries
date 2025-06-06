@@ -28,8 +28,7 @@ namespace google::scp::roma::wasm::test {
 using wasm::RomaWasmListOfStringRepresentation;
 
 TEST(WasmSerializerTest, ShouldWriteUint8) {
-  uint8_t mem_blob[4];
-  memset(mem_blob, 0, sizeof(mem_blob));
+  uint8_t mem_blob[4] = {0};
 
   WasmSerializer::WriteUint8(mem_blob, sizeof(mem_blob), 0, 123);
 
@@ -38,7 +37,7 @@ TEST(WasmSerializerTest, ShouldWriteUint8) {
   EXPECT_EQ(mem_blob[2], 0);
   EXPECT_EQ(mem_blob[3], 0);
 
-  memset(mem_blob, 0, sizeof(mem_blob));
+  ::memset(mem_blob, 0, sizeof(mem_blob));
 
   EXPECT_TRUE(WasmSerializer::WriteUint8(mem_blob, sizeof(mem_blob), 2, 234));
 
@@ -49,15 +48,13 @@ TEST(WasmSerializerTest, ShouldWriteUint8) {
 }
 
 TEST(WasmSerializerTest, ShouldNotWriteUint8IfOutOfBounds) {
-  uint8_t mem_blob[4];
-  memset(mem_blob, 0, sizeof(mem_blob));
+  uint8_t mem_blob[4] = {0};
 
   EXPECT_FALSE(WasmSerializer::WriteUint8(mem_blob, sizeof(mem_blob), 4, 123));
 }
 
 TEST(WasmSerializerTest, ShouldWriteUint16) {
-  uint8_t mem_blob[4];
-  memset(mem_blob, 0, sizeof(mem_blob));
+  uint8_t mem_blob[4] = {0};
 
   WasmSerializer::WriteUint16(mem_blob, sizeof(mem_blob), 0, 0x1234);
 
@@ -67,7 +64,7 @@ TEST(WasmSerializerTest, ShouldWriteUint16) {
   EXPECT_EQ(mem_blob[2], 0);
   EXPECT_EQ(mem_blob[3], 0);
 
-  memset(mem_blob, 0, sizeof(mem_blob));
+  ::memset(mem_blob, 0, sizeof(mem_blob));
 
   EXPECT_TRUE(
       WasmSerializer::WriteUint16(mem_blob, sizeof(mem_blob), 2, 0x4567));
@@ -80,15 +77,13 @@ TEST(WasmSerializerTest, ShouldWriteUint16) {
 }
 
 TEST(WasmSerializerTest, ShouldNotWriteUint16IfOutOfBounds) {
-  uint8_t mem_blob[4];
-  memset(mem_blob, 0, sizeof(mem_blob));
+  uint8_t mem_blob[4] = {0};
 
   EXPECT_FALSE(WasmSerializer::WriteUint16(mem_blob, sizeof(mem_blob), 3, 123));
 }
 
 TEST(WasmSerializerTest, ShouldWriteUint32) {
-  uint8_t mem_blob[8];
-  memset(mem_blob, 0, sizeof(mem_blob));
+  uint8_t mem_blob[8] = {0};
 
   WasmSerializer::WriteUint32(mem_blob, sizeof(mem_blob), 0, 0x12345678);
 
@@ -102,7 +97,7 @@ TEST(WasmSerializerTest, ShouldWriteUint32) {
   EXPECT_EQ(mem_blob[6], 0);
   EXPECT_EQ(mem_blob[7], 0);
 
-  memset(mem_blob, 0, sizeof(mem_blob));
+  ::memset(mem_blob, 0, sizeof(mem_blob));
 
   EXPECT_TRUE(
       WasmSerializer::WriteUint32(mem_blob, sizeof(mem_blob), 3, 0x456789AB));
@@ -118,15 +113,13 @@ TEST(WasmSerializerTest, ShouldWriteUint32) {
 }
 
 TEST(WasmSerializerTest, ShouldNotWriteUint32IfOutOfBounds) {
-  uint8_t mem_blob[4];
-  memset(mem_blob, 0, sizeof(mem_blob));
+  uint8_t mem_blob[4] = {0};
 
   EXPECT_FALSE(WasmSerializer::WriteUint32(mem_blob, sizeof(mem_blob), 1, 123));
 }
 
 TEST(WasmSerializerTest, ShouldWriteString) {
-  uint8_t mem_blob[8];
-  memset(mem_blob, 0, sizeof(mem_blob));
+  uint8_t mem_blob[8] = {0};
 
   EXPECT_TRUE(
       WasmSerializer::WriteRawString(mem_blob, sizeof(mem_blob), 2, "ABC", 3));
@@ -142,8 +135,7 @@ TEST(WasmSerializerTest, ShouldWriteString) {
 }
 
 TEST(WasmSerializerTest, ShouldNotWriteStringIfOutOfBounds) {
-  uint8_t mem_blob[8];
-  memset(mem_blob, 0, sizeof(mem_blob));
+  uint8_t mem_blob[8] = {0};
 
   EXPECT_FALSE(
       WasmSerializer::WriteRawString(mem_blob, sizeof(mem_blob), 6, "ABC", 3));
@@ -151,7 +143,7 @@ TEST(WasmSerializerTest, ShouldNotWriteStringIfOutOfBounds) {
 
 TEST(WasmSerializerTest, ShouldWriteCustomString) {
   uint8_t mem_blob[13];
-  memset(mem_blob, 0xAA, sizeof(mem_blob));
+  ::memset(mem_blob, 0xAA, sizeof(mem_blob));
 
   auto offset =
       WasmSerializer::WriteCustomString(mem_blob, sizeof(mem_blob), 1, "ABC");
@@ -185,7 +177,7 @@ TEST(WasmSerializerTest, ShouldWriteCustomString) {
 
 TEST(WasmSerializerTest, ShouldNotWriteCustomStringIfOutOfBounds) {
   uint8_t mem_blob[11];
-  memset(mem_blob, 0xAA, sizeof(mem_blob));
+  ::memset(mem_blob, 0xAA, sizeof(mem_blob));
 
   // Does not fit by one
   auto ptr =
@@ -196,7 +188,7 @@ TEST(WasmSerializerTest, ShouldNotWriteCustomStringIfOutOfBounds) {
 
 TEST(WasmSerializerTest, ShouldWriteCustomListString) {
   uint8_t mem_blob[25];
-  memset(mem_blob, 0xAA, sizeof(mem_blob));
+  ::memset(mem_blob, 0xAA, sizeof(mem_blob));
 
   std::vector<std::string> list = {"ABC"};
 
@@ -246,8 +238,7 @@ TEST(WasmSerializerTest, ShouldWriteCustomListString) {
 }
 
 TEST(WasmSerializerTest, ShouldNotWriteCustomListStringIfOutOfBounds) {
-  uint8_t mem_blob[23];
-  memset(mem_blob, 0, sizeof(mem_blob));
+  uint8_t mem_blob[23] = {0};
 
   std::vector<std::string> list = {"ABC"};
 
@@ -259,4 +250,5 @@ TEST(WasmSerializerTest, ShouldNotWriteCustomListStringIfOutOfBounds) {
 
   EXPECT_EQ(UINT32_MAX, offset);
 }
+
 }  // namespace google::scp::roma::wasm::test

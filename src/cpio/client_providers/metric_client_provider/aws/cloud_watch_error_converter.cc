@@ -21,6 +21,7 @@
 #include "src/core/common/global_logger/global_logger.h"
 #include "src/core/common/uuid/uuid.h"
 #include "src/cpio/common/aws/error_codes.h"
+#include "src/public/core/interface/execution_result.h"
 
 #include "error_codes.h"
 
@@ -49,17 +50,21 @@ ExecutionResult CloudWatchErrorConverter::ConvertCloudWatchError(
   auto failure = FailureExecutionResult(SC_AWS_INTERNAL_SERVICE_ERROR);
   switch (cloud_watch_error) {
     case CloudWatchErrors::ACCESS_DENIED:
-    // Gets this error when no credential supplied.
+      // Gets this error when no credential supplied.
+      [[fallthrough]];
     case CloudWatchErrors::MISSING_AUTHENTICATION_TOKEN:
       failure = FailureExecutionResult(SC_AWS_INVALID_CREDENTIALS);
       break;
     case CloudWatchErrors::MISSING_REQUIRED_PARAMETER:
+      [[fallthrough]];
     case CloudWatchErrors::INVALID_PARAMETER_COMBINATION:
+      [[fallthrough]];
     case CloudWatchErrors::INVALID_PARAMETER_VALUE:
       failure =
           core::FailureExecutionResult(core::errors::SC_AWS_INVALID_REQUEST);
       break;
     case CloudWatchErrors::SERVICE_UNAVAILABLE:
+      [[fallthrough]];
     case CloudWatchErrors::NETWORK_CONNECTION:
       failure = FailureExecutionResult(SC_AWS_SERVICE_UNAVAILABLE);
       break;
@@ -72,6 +77,7 @@ ExecutionResult CloudWatchErrorConverter::ConvertCloudWatchError(
       failure = FailureExecutionResult(SC_AWS_REQUEST_LIMIT_REACHED);
       break;
     case CloudWatchErrors::INTERNAL_FAILURE:
+      [[fallthrough]];
     default:
       failure = FailureExecutionResult(SC_AWS_INTERNAL_SERVICE_ERROR);
   }

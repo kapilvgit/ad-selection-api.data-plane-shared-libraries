@@ -12,7 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
+
+cc_library(
+    name = "performance_now",
+    srcs = select({
+        "//:non_prod_build": ["performance_now_nonprod.cc"],
+        "//conditions:default": ["performance_now_prod.cc"],
+    }),
+    hdrs = ["performance_now.h"],
+    deps = [
+        "//src/util:duration",
+        "@com_google_absl//absl/time",
+        "@v8//:v8_icu",
+    ],
+)
+
+cc_library(
+    name = "heap_snapshot_parser",
+    hdrs = ["heap_snapshot_parser.h"],
+    deps = [
+        "@v8//:v8_icu",
+    ],
+)
 
 cc_library(
     name = "v8_isolate_wrapper",
@@ -23,20 +45,34 @@ cc_library(
 )
 
 cc_library(
+    name = "profiler_isolate_wrapper",
+    hdrs = ["profiler_isolate_wrapper.h"],
+    deps = [
+        ":heap_snapshot_parser",
+        ":v8_isolate_wrapper",
+        "//src/core/common/uuid",
+        "@v8//:v8_icu",
+    ],
+)
+
+cc_library(
     name = "v8_isolate_function_binding",
     srcs = ["v8_isolate_function_binding.cc"],
     hdrs = ["v8_isolate_function_binding.h"],
     deps = [
+        ":performance_now",
         ":v8_isolate_wrapper",
-        "//src/roma/config",
+        "//src/roma/config:type_converter",
         "//src/roma/logging",
         "//src/roma/native_function_grpc_server:interface",
-        "//src/roma/native_function_grpc_server/proto:test_service_cc_proto",
-        "//src/roma/native_function_grpc_server/proto:test_service_grpc_proto",
+        "//src/roma/native_function_grpc_server/proto:callback_service_cc_proto",
+        "//src/roma/native_function_grpc_server/proto:callback_service_grpc_proto",
         "//src/roma/sandbox/constants",
         "//src/roma/sandbox/native_function_binding",
         "//src/roma/sandbox/native_function_binding:rpc_wrapper_cc_proto",
+        "//src/util:duration",
         "@com_github_grpc_grpc//:grpc++",
+        "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/container:flat_hash_map",
         "@v8//:v8_icu",
     ],
@@ -44,7 +80,6 @@ cc_library(
 
 cc_library(
     name = "v8_console",
-    srcs = ["v8_console.cc"],
     hdrs = ["v8_console.h"],
     copts = [
         "-Wno-macro-redefined",  # v8 and absl define redundant log macros
@@ -53,6 +88,7 @@ cc_library(
         "//src/roma/interface",
         "//src/roma/logging",
         "//src/roma/sandbox/native_function_binding:rpc_wrapper_cc_proto",
+        "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/strings",
@@ -62,9 +98,7 @@ cc_library(
 
 cc_library(
     name = "snapshot_compilation_context",
-    hdrs = [
-        "snapshot_compilation_context.h",
-    ],
+    hdrs = ["snapshot_compilation_context.h"],
     deps = [
         ":v8_isolate_wrapper",
         "//src/roma/sandbox/js_engine",
@@ -75,24 +109,22 @@ cc_library(
 cc_library(
     name = "v8_js_engine",
     srcs = ["v8_js_engine.cc"],
-    hdrs = [
-        "v8_js_engine.h",
-    ],
+    hdrs = ["v8_js_engine.h"],
     copts = [
         "-Wno-macro-redefined",  # v8 and absl define redundant log macros
         "-Wno-unused-variable",
     ],
     visibility = [
+        "//src/roma/benchmark:__subpackages__",
         "//src/roma/sandbox/worker:__pkg__",
         "//src/roma/sandbox/worker_api/sapi:__pkg__",
     ],
     deps = [
+        ":profiler_isolate_wrapper",
         ":snapshot_compilation_context",
         ":v8_console",
         ":v8_isolate_function_binding",
         ":v8_isolate_wrapper",
-        "//src/core/interface",
-        "//src/core/interface:type_def",
         "//src/logger:request_context_logger",
         "//src/roma/config",
         "//src/roma/logging",
@@ -110,6 +142,7 @@ cc_library(
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
         "@v8//:v8_icu",
     ],
 )
@@ -129,7 +162,6 @@ cc_test(
     ],
     deps = [
         ":v8_js_engine",
-        "//src/core/test/utils",
         "//src/roma/wasm:wasm_testing",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_googletest//:gtest_main",
@@ -142,7 +174,6 @@ cc_test(
     srcs = ["v8_console_test.cc"],
     deps = [
         ":v8_js_engine",
-        "//src/core/test/utils",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -153,7 +184,6 @@ cc_test(
     srcs = ["v8_isolate_function_binding_test.cc"],
     deps = [
         ":v8_js_engine",
-        "//src/core/test/utils",
         "@com_google_absl//absl/status",
         "@com_google_googletest//:gtest_main",
     ],
@@ -162,12 +192,69 @@ cc_test(
 cc_test(
     name = "v8_basic",
     size = "small",
-    srcs = ["v8_basic.cc"],
+    srcs = ["v8_basic_test.cc"],
     deps = [
         "//src/util:process_util",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status:statusor",
         "@com_google_googletest//:gtest_main",
+        "@v8//:v8_icu",
+    ],
+)
+
+cc_library(
+    name = "arraybuffer",
+    hdrs = [
+        "arraybuffer.h",
+        "arraybuffer_js.h",
+    ],
+    deps = [
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)
+
+cc_test(
+    name = "arraybuffer_test",
+    size = "small",
+    srcs = [
+        "arraybuffer_test.cc",
+    ],
+    data = [
+        "//src/roma/benchmark/flatbuffers:kvdata",
+    ],
+    deps = [
+        ":arraybuffer",
+        "//src/roma/benchmark/flatbuffers:arraybuffer_flatbuffer_js_lib",
+        "//src/util:process_util",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_googletest//:gtest_main",
+        "@v8//:v8_icu",
+    ],
+)
+
+cc_binary(
+    name = "arraybuffer_benchmark",
+    srcs = [
+        "arraybuffer_benchmark.cc",
+    ],
+    data = [
+        "//src/roma/benchmark/flatbuffers:kvdata",
+    ],
+    deps = [
+        ":arraybuffer",
+        "//src/roma/benchmark/flatbuffers:arraybuffer_flatbuffer_js_lib",
+        "//src/util:process_util",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_googletest//:gtest_main",
+        "@google_benchmark//:benchmark",
         "@v8//:v8_icu",
     ],
 )

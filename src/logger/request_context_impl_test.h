@@ -37,11 +37,11 @@ namespace logs_api = opentelemetry::logs;
 namespace logs_sdk = opentelemetry::sdk::logs;
 namespace logs_exporter = opentelemetry::exporter::logs;
 
-class ConsentedLogTest : public LogTest {
+class ConsentedLogTest : public test::LogTest {
  protected:
   void SetUp() override {
     // initialize max verbosity = kMaxV
-    PS_VLOG_IS_ON(0, kMaxV);
+    SetGlobalPSVLogLevel(kMaxV);
 
     logger_ = logs_sdk::LoggerProviderFactory::Create(
         logs_sdk::SimpleLogRecordProcessorFactory::Create(
@@ -80,7 +80,7 @@ class ConsentedLogTest : public LogTest {
   }
 
   std::unique_ptr<logs_api::LoggerProvider> logger_;
-  std::unique_ptr<ContextImpl> test_instance_;
+  std::unique_ptr<ContextImpl<>> test_instance_;
   ConsentedDebugConfiguration matched_token_, mismatched_token_;
 
   const std::string_view kServerToken = "server_tok";
@@ -91,12 +91,56 @@ class DebugResponseTest : public ConsentedLogTest {
   void SetUp() override {
     ConsentedLogTest::SetUp();
     debug_info_config_.set_is_debug_info_in_response(true);
+    matched_token_debug_info_set_true_ = matched_token_;
+    matched_token_debug_info_set_true_.set_is_debug_info_in_response(true);
   }
 
   bool accessed_debug_info_ = false;
   DebugInfo debug_info_;
-  ConsentedDebugConfiguration debug_info_config_;
+  ConsentedDebugConfiguration debug_info_config_,
+      matched_token_debug_info_set_true_;
 };
+
+class MockEventMessageProvider {
+ public:
+  const ::google::protobuf::Message& Get() { return event_message_; }
+
+  void Set(const std::string& field) {
+    event_message_.set_generation_id(field);
+  }
+
+ private:
+  LogContext event_message_;
+};
+
+class EventMessageTest : public ConsentedLogTest {
+ protected:
+  std::string ReadSs() {
+    // Shut down reader now to avoid concurrent access of Ss.
+    logger_.reset();
+    em_instance_.reset();
+    std::string output = GetSs().str();
+    GetSs().str("");
+    return output;
+  }
+
+  void SetServerTokenForTestOnly(std::string_view token) {
+    em_instance_->SetServerTokenForTestOnly(token);
+  }
+
+  std::unique_ptr<ContextImpl<MockEventMessageProvider>> em_instance_;
+};
+
+class SafePathLogTest : public ConsentedLogTest {
+ protected:
+  static std::unique_ptr<SafePathContext> CreateTestInstance() {
+    return std::unique_ptr<SafePathContext>(new SafePathContext());
+  }
+  void SetUp() override { ConsentedLogTest::SetUp(); }
+  std::unique_ptr<SafePathContext> test_instance_;
+};
+
+class SystemLogTest : public ConsentedLogTest {};
 
 }  // namespace privacy_sandbox::server_common::log
 #endif  // LOGGER_REQUEST_CONTEXT_IMPL_TEST_H_

@@ -58,7 +58,7 @@ cc_test(
     srcs = ["serializer_test.cc"],
     deps = [
         ":serializer",
-        "//src/core/test/utils",
+        "//src/roma/wasm:wasm_types",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -69,7 +69,7 @@ cc_test(
     srcs = ["deserializer_test.cc"],
     deps = [
         ":deserializer",
-        "//src/core/test/utils",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -80,16 +80,16 @@ cc_test(
     deps = [
         ":deserializer",
         ":serializer",
-        "//src/core/test/utils",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 
 cc_library(
     name = "wasm_testing",
-    testonly = True,
     srcs = ["testing_utils.cc"],
     hdrs = ["testing_utils.h"],
     visibility = [
+        "//src/roma/benchmark:__subpackages__",
         "//src/roma/roma_service:__subpackages__",
         "//src/roma/sandbox:__subpackages__",
         "//src/roma/worker:__subpackages__",

@@ -86,18 +86,21 @@ struct DifferentialPrivacy {
   constexpr explicit DifferentialPrivacy(
       T upper_bound = std::numeric_limits<T>::max(),
       T lower_bound = std::numeric_limits<T>::min(),
-      double min_noise_to_output = 0.0, double privacy_budget_weight = 1.0)
+      double drop_noisy_values_probability = 0.0,
+      double privacy_budget_weight = 1.0)
       : upper_bound_(std::max(lower_bound, upper_bound)),
         lower_bound_(std::min(lower_bound, upper_bound)),
-        min_noise_to_output_(min_noise_to_output),
+        drop_noisy_values_probability_(drop_noisy_values_probability),
         privacy_budget_weight_(privacy_budget_weight) {}
 
   T upper_bound_;
   T lower_bound_;
-  // The percentile confidence level used for false positive reduction purpose.
-  //  i.e. min_noise_to_output_ = 0.95 means that up to 95% of false
-  //  positive errors will be eliminated from the specified metric.
-  double min_noise_to_output_;
+  // The probability that noisy values will be turned to 0.
+  // Setting this to a higher value ensures that the noisy values will be turned
+  // to 0, but also means that some actual (non-noisy values) may also be turned
+  // to 0. Setting this to 1 means all values will be turned to 0 (eliminating
+  // all noise, but also eliminating all useful data)
+  double drop_noisy_values_probability_;
   // All Privacy kImpacting metrics split total privacy budget based on their
   // weight. i.e. privacy_budget = total_budget * privacy_budget_weight_ /
   // total_weight
@@ -108,41 +111,47 @@ struct DifferentialPrivacy {
 // `T` can be int or double
 // Examples to create `Definition` of different `Privacy` and `Instrument`
 //
+// * UpDownCounter (non-impacting and impacting)
 // Definition<int, Privacy::kNonImpacting, Instrument::kUpDownCounter>
-// d1(/*name*/ "d1", /*description*/ "d11");
-//
-// Use kEmptyPublicPartition for non-public partition.
-// std::string_view public_partitions[] = {"buyer_1", "buyer_2"};
-// Definition<int, Privacy::kNonImpacting, Instrument::kPartitionedCounter> d2(
-//     /*name*/ "d2", /*description*/ "d21" /*partition_type*/ "buyer_name",
-//     /*public_partitions*/ public_partitions);
-//
-// double histogram_boundaries[] = {1, 2};
-// Definition<int, Privacy::kNonImpacting, Instrument::kHistogram> d3(
-//     /*name*/ "d3", /*description*/ "d31", /*histogram_boundaries*/ hb);
-//
-// Definition<int, Privacy::kNonImpacting, Instrument::kGauge> d4(/*name*/
-// "d4", /*description*/"d41");
+// d1(/*name=*/"d1", /*description==*/"d11");
 //
 // Definition<int, Privacy::kImpacting, Instrument::kUpDownCounter> d5(
-//     /*name*/ "d5", /*description*/ "d51", /*upper_bound*/ 9, /*lower_bound*/
+//     /*name=*/"d5", /*description=*/"d51", /*upper_bound=*/9, /*lower_bound=*/
 //     1);
 //
+// * PartitionedCounter (non-impacting and impacting)
+//   -- use kEmptyPublicPartition for non-public partition.
+// std::string_view public_partitions[] = {"buyer_1", "buyer_2"};
+// Definition<int, Privacy::kNonImpacting, Instrument::kPartitionedCounter> d2(
+//     /*name=*/"d2", /*description=*/"d21" /*partition_type=*/"buyer_name",
+//     /*public_partitions=*/public_partitions);
+//
 // Definition<int, Privacy::kImpacting, Instrument::kPartitionedCounter> d6(
-//     /*name*/ "d6", /*description*/ "d61", /*partition_type*/ "buyer_name",
-//     /*max_partitions_contributed*/ 2,
-//     /*public_partitions*/ public_partitions,
-//     /*upper_bound*/ 9,
-//     /*lower_bound*/ 1);
+//     /*name=*/"d6", /*description=*/"d61", /*partition_type=*/"buyer_name",
+//     /*max_partitions_contributed=*/2,
+//     /*public_partitions=*/public_partitions,
+//     /*upper_bound=*/9,
+//     /*lower_bound=*/1);
+//
+// * Histogram (non-impacting and impacting)
+// double histogram_boundaries[] = {1, 2};
+// Definition<int, Privacy::kNonImpacting, Instrument::kHistogram> d3(
+//     /*name=*/"d3", /*description=*/"d31", /*histogram_boundaries=*/hb);
 //
 // Definition<int, Privacy::kImpacting, Instrument::kHistogram> d7(
-//     /*name*/ "d7", /*description*/ "d71", /*histogram_boundaries*/ hb);
+//     /*name=*/"d7", /*description=*/"d71", /*histogram_boundaries=*/hb,
+//     /*upper_bound=*/9, /*lower_bound=*/0);
 //
-// Their pointers should then be added into a list, which defines the list of
-// metrics the server can log. A Span of the list is used to initialize
+// * Gauge (non-impacting only)
+// Definition<int, Privacy::kNonImpacting, Instrument::kGauge> d4(/*name=*/"d4",
+// /*description*/"d41");
+//
+// The definition pointers should then be added into a list, which defines the
+// list of metrics the server can log. A Span of the list is used to initialize
 // 'Context'. For example:
-// const DefinitionName* metric_list[] = {&d1, &d2, &d3, &d4, &d5, &d6, &d7};
-// absl::Span<const DefinitionName* const> metric_list_span = metric_list;
+//   const DefinitionName* metric_list[] = {&d1, &d2, &d3, &d4, &d5, &d6, &d7};
+//   absl::Span<const DefinitionName* const> metric_list_span = metric_list;
+//
 template <typename T, Privacy privacy, Instrument instrument>
 struct Definition : DefinitionName,
                     internal::Partitioned,
@@ -224,14 +233,14 @@ struct Definition : DefinitionName,
       std::string_view name, std::string_view description,
       std::string_view partition_type, int max_partitions_contributed,
       absl::Span<const std::string_view> public_partitions, T upper_bound,
-      T lower_bound, double min_noise_to_output = 0.0,
+      T lower_bound, double drop_noisy_values_probability = 0.0,
       std::enable_if_t<partitioned_counter ==
                        Instrument::kPartitionedCounter>* = nullptr)
       : DefinitionName(name, description),
         internal::Partitioned(partition_type, max_partitions_contributed,
                               public_partitions),
         internal::DifferentialPrivacy<T>(upper_bound, lower_bound,
-                                         min_noise_to_output) {
+                                         drop_noisy_values_probability) {
     public_partitions_copy_ = public_partitions_;
     privacy_budget_weight_copy_ = privacy_budget_weight_;
   }
@@ -293,9 +302,10 @@ inline constexpr Definition<int, Privacy::kNonImpacting,
     kTotalRequestCount("request.count",
                        "Total number of requests received by the server");
 
-inline constexpr double kTimeHistogram[] = {25,  35,    50,    71,    100,
-                                            141, 200,   283,   400,   566,
-                                            800, 1'131, 1'600, 2'263, 3'200};
+inline constexpr double kTimeHistogram[] = {
+    1,    2,    3,    4,    6,     9,     13,    18,    25,   35,   50,
+    71,   100,  141,  200,  283,   400,   566,   800,   1131, 1600, 2263,
+    3200, 4525, 6400, 9051, 12800, 18102, 25600, 36204, 51200};
 inline constexpr Definition<int, Privacy::kNonImpacting, Instrument::kHistogram>
     kServerTotalTimeMs("request.duration_ms",
                        "Total time taken by the server to execute the request",
@@ -353,6 +363,45 @@ inline constexpr Definition<int, Privacy::kNonImpacting,
     kInitiatedRequestErrorCount("initiated_request.errors_count",
                                 "Total number of errors occurred for the "
                                 "requests received by the server");
+
+// all custom metrics should not be in definition_list used to initialize
+// ContextMap
+inline constexpr Definition<double, Privacy::kImpacting,
+                            Instrument::kPartitionedCounter>
+    kCustom1("placeholder_1", "No. of times metric 1 return udf request",
+             kEmptyPartitionType, 1, kEmptyPublicPartition, 1, 0);
+inline constexpr Definition<double, Privacy::kImpacting,
+                            Instrument::kPartitionedCounter>
+    kCustom2("placeholder_2", "No. of times metric 2 return udf request",
+             kEmptyPartitionType, 1, kEmptyPublicPartition, 1, 0);
+inline constexpr Definition<double, Privacy::kImpacting,
+                            Instrument::kPartitionedCounter>
+    kCustom3("placeholder_3", "No. of times metric 3 return udf request",
+             kEmptyPartitionType, 1, kEmptyPublicPartition, 1, 0);
+
+inline constexpr Definition<double, Privacy::kImpacting, Instrument::kHistogram>
+    kCustomHistogram1("placeholder_H1", "Histogram metric 1 for UDF request",
+                      kEmptyHistogramBoundaries, 1, 0);
+inline constexpr Definition<double, Privacy::kImpacting, Instrument::kHistogram>
+    kCustomHistogram2("placeholder_H2", "Histogram metric 2 for UDF request",
+                      kEmptyHistogramBoundaries, 1, 0);
+inline constexpr Definition<double, Privacy::kImpacting, Instrument::kHistogram>
+    kCustomHistogram3("placeholder_H3", "Histogram metric 3 for UDF request",
+                      kEmptyHistogramBoundaries, 1, 0);
+inline constexpr const Definition<double, Privacy::kImpacting,
+                                  Instrument::kHistogram>*
+    kCustomHistogramList[] = {
+        &kCustomHistogram1,
+        &kCustomHistogram2,
+        &kCustomHistogram3,
+};
+inline constexpr const Definition<double, Privacy::kImpacting,
+                                  Instrument::kPartitionedCounter>*
+    kCustomList[] = {
+        &kCustom1,
+        &kCustom2,
+        &kCustom3,
+};
 
 }  // namespace privacy_sandbox::server_common::metrics
 

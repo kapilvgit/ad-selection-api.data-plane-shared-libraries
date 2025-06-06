@@ -24,8 +24,13 @@
 #include <vector>
 
 #include "absl/log/check.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/synchronization/notification.h"
 #include "absl/time/time.h"
+#include "src/roma/config/config.h"
+#include "src/roma/interface/roma.h"
+#include "src/roma/roma_service/roma_service.h"
 
 namespace google::scp::roma::benchmark {
 namespace {
@@ -42,72 +47,62 @@ FakeKvServer::FakeKvServer(Config<> config) {
   roma_service_ =
       std::make_unique<google::scp::roma::sandbox::roma_service::RomaService<>>(
           std::move(config));
-  CHECK(roma_service_->Init().ok());
+  CHECK_OK(roma_service_->Init());
 }
 
-FakeKvServer::~FakeKvServer() { CHECK(roma_service_->Stop().ok()); }
+FakeKvServer::~FakeKvServer() { CHECK_OK(roma_service_->Stop()); }
 
-std::string FakeKvServer::ExecuteCode(const std::vector<std::string> keys) {
+std::string FakeKvServer::ExecuteCode(std::vector<std::string> keys) {
   CHECK(handler_name_ != "")
       << "SetCodeObject() must be called before ExecuteCode()";
 
-  std::shared_ptr<absl::Status> response_status =
-      std::make_shared<absl::Status>();
-  std::shared_ptr<std::string> result = std::make_shared<std::string>();
-  std::shared_ptr<absl::Notification> notification =
-      std::make_shared<absl::Notification>();
+  absl::Status response_status;
+  std::string result;
+  absl::Notification notification;
   InvocationStrRequest<> invocation_request = {
-      .id = std::string{kInvocationRequestId},
-      .version_string = std::string{kVersionString},
+      .id = std::string(kInvocationRequestId),
+      .version_string = std::string(kVersionString),
       .handler_name = handler_name_,
       .input = std::move(keys),
   };
 
-  const auto status = roma_service_->Execute(
+  CHECK_OK(roma_service_->Execute(
       std::make_unique<InvocationStrRequest<>>(invocation_request),
-      [notification, response_status,
-       result](absl::StatusOr<ResponseObject> resp) {
+      [&notification, &response_status,
+       &result](absl::StatusOr<ResponseObject> resp) {
         if (resp.ok()) {
-          *result = std::move(resp->resp);
+          result = std::move(resp->resp);
         } else {
-          response_status->Update(std::move(resp.status()));
+          response_status.Update(resp.status());
         }
-        notification->Notify();
-      });
-  CHECK(status.ok()) << status;
-  notification->WaitForNotificationWithTimeout(kExecuteCodeTimeout);
-  CHECK(notification->HasBeenNotified()) << "Timed out waiting for UDF result.";
-  CHECK(response_status->ok()) << *response_status;
-  return *result;
+        notification.Notify();
+      }));
+  CHECK(notification.WaitForNotificationWithTimeout(kExecuteCodeTimeout))
+      << "ExecuteCode failed, timeout exceeded.";
+  CHECK_OK(response_status);
+  return result;
 }
 
 void FakeKvServer::SetCodeObject(CodeConfig code_config) {
-  std::shared_ptr<absl::Status> response_status =
-      std::make_shared<absl::Status>();
-  std::shared_ptr<absl::Notification> notification =
-      std::make_shared<absl::Notification>();
+  absl::Status response_status;
+  absl::Notification notification;
   CodeObject code_object = {
-      .id = std::string{kCodeObjectId},
-      .version_string = std::string{kVersionString},
+      .id = std::string(kCodeObjectId),
+      .version_string = std::string(kVersionString),
       .js = std::move(code_config.js),
       .wasm = std::move(code_config.wasm),
   };
-
-  absl::Status load_status = roma_service_->LoadCodeObj(
-      std::make_unique<CodeObject>(code_object),
-      [notification, response_status](absl::StatusOr<ResponseObject> resp) {
+  CHECK_OK(roma_service_->LoadCodeObj(
+      std::make_unique<CodeObject>(std::move(code_object)),
+      [&notification, &response_status](absl::StatusOr<ResponseObject> resp) {
         if (!resp.ok()) {
-          response_status->Update(std::move(resp.status()));
+          response_status.Update(std::move(resp.status()));
         }
-        notification->Notify();
-      });
-
-  CHECK(load_status.ok()) << load_status;
-  notification->WaitForNotificationWithTimeout(kCodeUpdateTimeout);
-  CHECK(notification->HasBeenNotified())
-      << "Timed out setting UDF code object.";
-  CHECK(response_status->ok()) << *response_status;
-
+        notification.Notify();
+      }));
+  CHECK(notification.WaitForNotificationWithTimeout(kCodeUpdateTimeout))
+      << "SetCodeObject failed, timeout exceeded.";
+  CHECK_OK(response_status) << response_status;
   handler_name_ = std::move(code_config.udf_handler_name);
 }
 

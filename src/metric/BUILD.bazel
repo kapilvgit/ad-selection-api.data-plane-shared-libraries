@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+load("@rules_buf//buf:defs.bzl", "buf_lint_test")
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_proto_library", "cc_test")
+load("@rules_proto//proto:defs.bzl", "proto_library")
 
 cc_library(
     name = "definition",
-    hdrs = [
-        "definition.h",
-    ],
+    hdrs = ["definition.h"],
     visibility = ["//visibility:public"],
     deps = [
         "@com_google_absl//absl/log:check",
@@ -77,11 +77,10 @@ cc_test(
 
 cc_library(
     name = "context",
-    hdrs = [
-        "context.h",
-    ],
+    hdrs = ["context.h"],
     deps = [
         ":definition",
+        ":udf_cc_proto",
         "//src/telemetry/flag:telemetry_flag",
         "//src/util/status_macro:status_macros",
         "@com_google_absl//absl/container:flat_hash_map",
@@ -94,13 +93,30 @@ cc_library(
 )
 
 cc_test(
-    name = "context_test",
+    name = "context_nonprod_test",
     timeout = "short",
-    srcs = ["context_test.h"] +
-           select({
-               "//:non_prod_build": ["context_nonprod_test.cc"],
-               "//conditions:default": ["context_test.cc"],
-           }),
+    srcs = [
+        "context_nonprod_test.cc",
+        "context_test.h",
+    ],
+    target_compatible_with = select({
+        "//:non_prod_build": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [
+        ":context",
+        "@com_google_absl//absl/log:check",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "context_prod_test",
+    timeout = "short",
+    srcs = [
+        "context_prod_test.cc",
+        "context_test.h",
+    ],
     deps = [
         ":context",
         "@com_google_absl//absl/log:check",
@@ -110,9 +126,7 @@ cc_test(
 
 cc_library(
     name = "context_map",
-    hdrs = [
-        "context_map.h",
-    ],
+    hdrs = ["context_map.h"],
     visibility = ["//visibility:public"],
     deps = [
         ":context",
@@ -136,9 +150,7 @@ cc_test(
 
 cc_library(
     name = "dp",
-    hdrs = [
-        "dp.h",
-    ],
+    hdrs = ["dp.h"],
     deps = [
         ":definition",
         "//src/util/status_macro:status_macros",
@@ -148,6 +160,7 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/time",
         "@com_google_cc_differential_privacy//algorithms:bounded-sum",
     ],
 )
@@ -166,9 +179,7 @@ cc_test(
 
 cc_library(
     name = "key_fetch",
-    hdrs = [
-        "key_fetch.h",
-    ],
+    hdrs = ["key_fetch.h"],
     visibility = ["//visibility:public"],
     deps = [
         "//src/public/core/interface:cloud_platform",
@@ -185,4 +196,21 @@ cc_test(
         ":key_fetch",
         "@com_google_googletest//:gtest_main",
     ],
+)
+
+proto_library(
+    name = "udf_proto",
+    srcs = ["udf.proto"],
+)
+
+cc_proto_library(
+    name = "udf_cc_proto",
+    deps = [":udf_proto"],
+)
+
+buf_lint_test(
+    name = "udf_proto_lint",
+    size = "small",
+    config = "//src:buf.yaml",
+    targets = [":udf_proto"],
 )

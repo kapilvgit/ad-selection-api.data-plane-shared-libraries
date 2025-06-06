@@ -49,13 +49,43 @@ message TelemetryConfig {
   // The time interval between two consecutive differential privacy aggregated.
   // metric exports, must be at least metric_export_interval_ms
   int32 dp_export_interval_ms = 4;
+
+  repeated MetricConfig custom_udf_metric = 5;
+
 }
 
 message MetricConfig {
   // name should match `metrics::Definition` in the list of server's metric
   // provided when creating `ContextMap`
-  string name = 1;
+  optional string name = 1;
 
   // overwrite the public_partitions_ in metric definition if not empty
   repeated string public_partitions = 2;
+
+  // overwrite the max_partitions_contributed_ in metric definition if being set
+  optional int32 max_partitions_contributed = 3;
+
+  // overwrite the lower_bound_ in metric definition if being set
+  optional double lower_bound = 4;
+
+  // overwrite the upper_bound_ in metric definition if being set
+  optional double upper_bound = 5;
+
+  // overwrite the privacy_budget_weight_ in metric definition if being set
+  optional double privacy_budget_weight = 6;
+
+  // overwrite the drop_noisy_values_probability_ in metric definition if being set
+  optional double drop_noisy_values_probability = 7;
+
+  //overwrite metric description
+  optional string description = 8;
+
+  //overwrite partition_type in metric definition if being set.
+  //Only used by custom_udf_metric.
+  optional string partition_type = 9;
+
+  //overwrite histogram_boundaries in metric definition if being set.
+  //Only used by custom_udf_metric.
+  repeated double histogram_boundaries = 10;
+
 }

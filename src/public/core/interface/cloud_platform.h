@@ -1,5 +1,6 @@
 /*
  * Copyright 2023 Google LLC
+ * Copyright (C) Microsoft Corporation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +18,13 @@
 #ifndef PUBLIC_CORE_INTERFACE_CLOUD_PLATFORM_H_
 #define PUBLIC_CORE_INTERFACE_CLOUD_PLATFORM_H_
 
+#include <string_view>
+
 namespace privacy_sandbox::server_common {
+
+inline constexpr std::string_view kLocal = "local";
+inline constexpr std::string_view kGcp = "GCP";
+inline constexpr std::string_view kAws = "AWS";
 
 // Declare cloud platforms supported.
 // Need to update key refresh monitoring code in src/metric/key_fetch.h when
@@ -27,7 +34,20 @@ enum class CloudPlatform {
   kLocal,
   kGcp,
   kAws,
+  kAzure,
 };
+
+constexpr inline std::string_view CloudPlatformEnumToString(
+    CloudPlatform cloud_platform) {
+  switch (cloud_platform) {
+    case CloudPlatform::kLocal:
+      return kLocal;
+    case CloudPlatform::kGcp:
+      return kGcp;
+    case CloudPlatform::kAws:
+      return kAws;
+  }
+}
 
 }  // namespace privacy_sandbox::server_common
 

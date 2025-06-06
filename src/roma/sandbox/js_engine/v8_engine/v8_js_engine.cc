@@ -32,6 +32,7 @@
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/string_view.h"
+#include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "src/debug/debug-interface.h"
 #include "src/logger/request_context_logger.h"
@@ -39,6 +40,7 @@
 #include "src/roma/interface/function_binding_io.pb.h"
 #include "src/roma/logging/logging.h"
 #include "src/roma/sandbox/constants/constants.h"
+#include "src/roma/sandbox/js_engine/v8_engine/profiler_isolate_wrapper.h"
 #include "src/roma/sandbox/native_function_binding/rpc_wrapper.pb.h"
 #include "src/roma/worker/execution_utils.h"
 #include "src/util/duration.h"
@@ -56,6 +58,7 @@ using google::scp::roma::proto::RpcWrapper;
 using google::scp::roma::sandbox::constants::kHandlerCallMetricJsEngineDuration;
 using google::scp::roma::sandbox::constants::
     kInputParsingMetricJsEngineDuration;
+using google::scp::roma::sandbox::constants::kJsEngineOneTimeSetupV8FlagsKey;
 using google::scp::roma::sandbox::constants::kJsEngineOneTimeSetupWasmPagesKey;
 using google::scp::roma::sandbox::constants::kMaxNumberOfWasm32BitMemPages;
 using google::scp::roma::sandbox::constants::kMinLogLevel;
@@ -96,21 +99,15 @@ std::shared_ptr<std::string> GetCodeFromContext(
   return code;
 }
 
-std::vector<std::string> GetErrors(v8::Isolate* isolate,
-                                   v8::TryCatch& try_catch,
-                                   std::string_view top_level_error) {
-  std::vector<std::string> errors = {
-      std::string(top_level_error),
-  };
-  if (try_catch.HasCaught()) {
-    if (std::string error_msg;
-        !try_catch.Message().IsEmpty() &&
-        TypeConverter<std::string>::FromV8(isolate, try_catch.Message()->Get(),
-                                           &error_msg)) {
-      errors.push_back(std::move(error_msg));
-    }
+std::string GetError(v8::Isolate* isolate, v8::TryCatch& try_catch,
+                     std::string_view top_level_error) {
+  if (std::string error_msg;
+      try_catch.HasCaught() && !try_catch.Message().IsEmpty() &&
+      TypeConverter<std::string>::FromV8(isolate, try_catch.Message()->Get(),
+                                         &error_msg)) {
+    return absl::StrCat(top_level_error, " ", error_msg);
   }
-  return errors;
+  return std::string(top_level_error);
 }
 
 std::string GetStackTrace(v8::Isolate* isolate, v8::TryCatch& try_catch,
@@ -164,16 +161,66 @@ LogOptions GetLogOptions(
       .min_log_level = min_log_level,
   };
 }
+
+std::string_view GetGCTypeName(v8::GCType type) {
+  static const absl::flat_hash_map<v8::GCType, std::string_view> gcTypeMap = {
+      {v8::GCType::kGCTypeScavenge, "kGCTypeScavenge"},
+      {v8::GCType::kGCTypeMinorMarkCompact, "kGCTypeMinorMarkCompact"},
+      {v8::GCType::kGCTypeMarkSweepCompact, "kGCTypeMarkSweepCompact"},
+      {v8::GCType::kGCTypeIncrementalMarking, "kGCTypeIncrementalMarking"},
+      {v8::GCType::kGCTypeProcessWeakCallbacks, "kGCTypeProcessWeakCallbacks"},
+      {v8::GCType::kGCTypeAll, "kGCTypeAll"},
+  };
+
+  if (auto it = gcTypeMap.find(type); it != gcTypeMap.end()) {
+    return it->second;
+  } else {
+    return "UNKNOWN_GC_TYPE";
+  }
+}
+
+std::string_view GetGCCallbackFlagsName(v8::GCCallbackFlags flags) {
+  static const absl::flat_hash_map<v8::GCCallbackFlags, std::string_view>
+      flagMap = {
+          {v8::GCCallbackFlags::kNoGCCallbackFlags, "kNoGCCallbackFlags"},
+          {v8::GCCallbackFlags::kGCCallbackFlagConstructRetainedObjectInfos,
+           "kGCCallbackFlagConstructRetainedObjectInfos"},
+          {v8::GCCallbackFlags::kGCCallbackFlagForced, "kGCCallbackFlagForced"},
+          {v8::GCCallbackFlags::
+               kGCCallbackFlagSynchronousPhantomCallbackProcessing,
+           "kGCCallbackFlagSynchronousPhantomCallbackProcessing"},
+          {v8::GCCallbackFlags::kGCCallbackFlagCollectAllAvailableGarbage,
+           "kGCCallbackFlagCollectAllAvailableGarbage"},
+          {v8::GCCallbackFlags::kGCCallbackFlagCollectAllExternalMemory,
+           "kGCCallbackFlagCollectAllExternalMemory"},
+          {v8::GCCallbackFlags::kGCCallbackScheduleIdleGarbageCollection,
+           "kGCCallbackScheduleIdleGarbageCollection"},
+      };
+
+  if (auto it = flagMap.find(flags); it != flagMap.end()) {
+    return it->second;
+  } else {
+    return "UNKNOWN_GC_CALLBACK_FLAG";
+  }
+}
 }  // namespace
 
 namespace google::scp::roma::sandbox::js_engine::v8_js_engine {
 
 V8JsEngine::V8JsEngine(
     std::unique_ptr<V8IsolateFunctionBinding> isolate_function_binding,
-    const JsEngineResourceConstraints& v8_resource_constraints)
+    const bool skip_v8_cleanup, const bool enable_profilers,
+    const JsEngineResourceConstraints& v8_resource_constraints,
+    const bool logging_function_set,
+    const bool disable_udf_stacktraces_in_response)
     : isolate_function_binding_(std::move(isolate_function_binding)),
       v8_resource_constraints_(v8_resource_constraints),
-      execution_watchdog_(std::make_unique<roma::worker::ExecutionWatchDog>()) {
+      execution_watchdog_(std::make_unique<roma::worker::ExecutionWatchDog>()),
+      skip_v8_cleanup_(skip_v8_cleanup),
+      enable_profilers_(enable_profilers),
+      logging_function_set_(logging_function_set),
+      disable_udf_stacktraces_in_response_(
+          disable_udf_stacktraces_in_response) {
   if (isolate_function_binding_) {
     isolate_function_binding_->AddExternalReferences(external_references_);
   }
@@ -187,7 +234,15 @@ void V8JsEngine::Stop() {
   if (execution_watchdog_) {
     execution_watchdog_->Stop();
   }
-  DisposeIsolate();
+  isolate_wrapper_ = nullptr;
+}
+
+V8JsEngine::~V8JsEngine() {
+  Stop();
+  if (!skip_v8_cleanup_) {
+    v8::V8::Dispose();
+    v8::V8::DisposePlatform();
+  }
 }
 
 void V8JsEngine::OneTimeSetup(
@@ -201,18 +256,27 @@ void V8JsEngine::OneTimeSetup(
   }
   absl::StatusOr<std::string> my_path =
       privacy_sandbox::server_common::GetExePath();
-  CHECK_OK(my_path) << my_path.status();
+  CHECK_OK(my_path);
   v8::V8::InitializeICUDefaultLocation(my_path->data());
   v8::V8::InitializeExternalStartupData(my_path->data());
+
+  std::string v8_flags;
+  if (const auto it = config.find(kJsEngineOneTimeSetupV8FlagsKey);
+      it != config.end() && !it->second.empty()) {
+    v8_flags = it->second;
+  }
 
   // Set the max number of WASM memory pages
   if (max_wasm_memory_number_of_pages != 0) {
     const size_t page_count = std::min(max_wasm_memory_number_of_pages,
                                        kMaxNumberOfWasm32BitMemPages);
     const auto flag_value =
-        absl::StrCat(kWasmMemPagesV8PlatformFlag, page_count);
-    v8::V8::SetFlagsFromString(flag_value.c_str());
+        absl::StrCat(" ", kWasmMemPagesV8PlatformFlag, page_count);
+    absl::StrAppend(&v8_flags, flag_value);
   }
+
+  v8::V8::SetFlagsFromString(v8_flags.c_str());
+
   static const v8::Platform* v8_platform = [] {
     std::unique_ptr<v8::Platform> v8_platform =
         v8::platform::NewDefaultPlatform();
@@ -227,11 +291,15 @@ absl::Status V8JsEngine::FormatAndLogError(v8::Isolate* isolate,
                                            v8::Local<v8::Context> context,
                                            std::string_view top_level_error,
                                            LogOptions log_options) {
-  std::vector<std::string> errors =
-      GetErrors(isolate, try_catch, top_level_error);
-  errors.push_back(GetStackTrace(isolate, try_catch, context));
-  HandleLog("ROMA_ERROR", absl::StrJoin(errors, "\n"), std::move(log_options));
-  return absl::InternalError(top_level_error);
+  std::string err_msg = GetError(isolate, try_catch, top_level_error);
+  std::string stack_trace = GetStackTrace(isolate, try_catch, context);
+  std::string err_msg_stack_trace = absl::StrCat(err_msg, "\n", stack_trace);
+  HandleLog("ROMA_ERROR", err_msg_stack_trace, std::move(log_options))
+      .IgnoreError();
+  if (disable_udf_stacktraces_in_response_) {
+    return absl::InternalError(std::move(err_msg));
+  }
+  return absl::InternalError(std::move(err_msg_stack_trace));
 }
 
 absl::Status V8JsEngine::HandleLog(std::string_view function_name,
@@ -248,8 +316,7 @@ absl::Status V8JsEngine::HandleLog(std::string_view function_name,
 }
 
 absl::Status V8JsEngine::CreateSnapshot(v8::StartupData& startup_data,
-                                        std::string_view js_code,
-                                        std::string& err_msg) {
+                                        std::string_view js_code) {
   v8::SnapshotCreator creator(external_references_.data());
   v8::Isolate* isolate = creator.GetIsolate();
   {
@@ -261,7 +328,8 @@ absl::Status V8JsEngine::CreateSnapshot(v8::StartupData& startup_data,
     // Create a context scope, which has essential side-effects for compilation
     v8::Context::Scope context_scope(context);
     //  Compile and run JavaScript code object.
-    PS_RETURN_IF_ERROR(ExecutionUtils::CompileRunJS(js_code, err_msg));
+    PS_RETURN_IF_ERROR(
+        ExecutionUtils::CompileRunJS(js_code, logging_function_set_));
     // Set above context with compiled and run code as the default context for
     // the StartupData blob to create.
     creator.SetDefaultContext(context);
@@ -273,8 +341,7 @@ absl::Status V8JsEngine::CreateSnapshot(v8::StartupData& startup_data,
 
 absl::Status V8JsEngine::CreateSnapshotWithGlobals(
     v8::StartupData& startup_data, absl::Span<const uint8_t> wasm,
-    const absl::flat_hash_map<std::string_view, std::string_view>& metadata,
-    std::string& err_msg) {
+    const absl::flat_hash_map<std::string_view, std::string_view>& metadata) {
   v8::SnapshotCreator creator(external_references_.data());
   v8::Isolate* isolate = creator.GetIsolate();
 
@@ -316,6 +383,43 @@ static size_t NearHeapLimitCallback(void* data, size_t current_heap_limit,
   return 0;
 }
 
+void FatalErrorCallback(const char* location, const char* message) {
+  LOG(ERROR) << "Fatal Error at location: "
+             << (location != nullptr ? location : "unknown")
+             << ". Occurred with message: "
+             << (message != nullptr ? message : "");
+}
+
+void LogHeapStatistics(v8::Isolate* isolate) {
+  v8::HeapStatistics heap_stats;
+  isolate->GetHeapStatistics(&heap_stats);
+
+  ROMA_VLOG(9) << "\nHeap Statistics:" << "\n  total_heap_size: "
+               << heap_stats.total_heap_size()
+               << "\n  total_heap_size_executable: "
+               << heap_stats.total_heap_size_executable()
+               << "\n  total_physical_size: "
+               << heap_stats.total_physical_size()
+               << "\n  used_heap_size: " << heap_stats.used_heap_size()
+               << "\n  heap_size_limit: " << heap_stats.heap_size_limit();
+}
+
+void GCPrologueCallback(v8::Isolate* isolate, v8::GCType type,
+                        v8::GCCallbackFlags flags) {
+  ROMA_VLOG(9) << "Garbage Collection event started. Type: "
+               << GetGCTypeName(type)
+               << ", Flags: " << GetGCCallbackFlagsName(flags);
+  LogHeapStatistics(isolate);
+}
+
+void GCEpilogueCallback(v8::Isolate* isolate, v8::GCType type,
+                        v8::GCCallbackFlags flags) {
+  ROMA_VLOG(9) << "Garbage Collection event finished. Type: "
+               << GetGCTypeName(type)
+               << ", Flags: " << GetGCCallbackFlagsName(flags);
+  LogHeapStatistics(isolate);
+}
+
 std::unique_ptr<V8IsolateWrapper> V8JsEngine::CreateIsolate(
     const v8::StartupData& startup_data) {
   v8::Isolate::CreateParams params;
@@ -345,26 +449,22 @@ std::unique_ptr<V8IsolateWrapper> V8JsEngine::CreateIsolate(
     return nullptr;
   }
   isolate->AddNearHeapLimitCallback(NearHeapLimitCallback, nullptr);
-  v8::debug::SetConsoleDelegate(isolate, console(isolate));
-  return std::make_unique<V8IsolateWrapper>(isolate, std::move(allocator));
+  isolate->SetCaptureStackTraceForUncaughtExceptions(true);
+  isolate->SetFatalErrorHandler(FatalErrorCallback);
+  isolate->AddGCPrologueCallback(GCPrologueCallback);
+  isolate->AddGCEpilogueCallback(GCEpilogueCallback);
+  v8::debug::SetConsoleDelegate(isolate, console());
+  return V8IsolateFactory::Create(isolate, std::move(allocator),
+                                  enable_profilers_);
 }
 
-V8Console* V8JsEngine::console(v8::Isolate* isolate)
-    ABSL_LOCKS_EXCLUDED(console_mutex_) {
+V8Console* V8JsEngine::console() ABSL_LOCKS_EXCLUDED(console_mutex_) {
   absl::MutexLock lock(&console_mutex_);
-  auto handle_log_func = [this](std::string_view function_name,
-                                std::string_view msg, LogOptions log_options) {
-    return HandleLog(function_name, msg, std::move(log_options));
-  };
-
   if (console_ == nullptr) {
-    console_ = std::make_unique<V8Console>(isolate, handle_log_func);
+    console_ = std::make_unique<V8Console>();
   }
-
   return console_.get();
 }
-
-void V8JsEngine::DisposeIsolate() { isolate_wrapper_ = nullptr; }
 
 void V8JsEngine::StartWatchdogTimer(
     v8::Isolate* isolate,
@@ -391,8 +491,7 @@ void V8JsEngine::StopWatchdogTimer() { execution_watchdog_->EndTimer(); }
 absl::StatusOr<RomaJsEngineCompilationContext>
 V8JsEngine::CreateCompilationContext(
     std::string_view code, absl::Span<const uint8_t> wasm,
-    const absl::flat_hash_map<std::string_view, std::string_view>& metadata,
-    std::string& err_msg) {
+    const absl::flat_hash_map<std::string_view, std::string_view>& metadata) {
   if (code.empty()) {
     return absl::InvalidArgumentError(
         "Create compilation context failed with empty source code.");
@@ -404,10 +503,9 @@ V8JsEngine::CreateCompilationContext(
   // created.
   const bool js_with_wasm = !wasm.empty();
   absl::Status snapshot_status =
-      js_with_wasm
-          ? CreateSnapshotWithGlobals(snapshot_context->startup_data, wasm,
-                                      metadata, err_msg)
-          : CreateSnapshot(snapshot_context->startup_data, code, err_msg);
+      js_with_wasm ? CreateSnapshotWithGlobals(snapshot_context->startup_data,
+                                               wasm, metadata)
+                   : CreateSnapshot(snapshot_context->startup_data, code);
   std::unique_ptr<V8IsolateWrapper> isolate_or;
   if (snapshot_status.ok()) {
     isolate_or = CreateIsolate(snapshot_context->startup_data);
@@ -418,19 +516,16 @@ V8JsEngine::CreateCompilationContext(
 
     if (js_with_wasm) {
       if (auto wasm_compile_result =
-              CompileWasmCodeArray(isolate_or->isolate(), wasm, err_msg);
+              CompileWasmCodeArray(isolate_or->isolate(), wasm);
           !wasm_compile_result.ok()) {
-        LOG(ERROR) << "Compile wasm module failed with " << wasm_compile_result;
-        DLOG(ERROR) << "Compile wasm module failed with debug error" << err_msg;
+        DLOG(ERROR) << "Compile wasm module failed with "
+                    << wasm_compile_result;
         return wasm_compile_result;
       }
       if (auto status = ExecutionUtils::CreateUnboundScript(
-              snapshot_context->unbound_script, isolate_or->isolate(), code,
-              err_msg);
+              snapshot_context->unbound_script, isolate_or->isolate(), code);
           !status.ok()) {
-        LOG(ERROR) << "CreateUnboundScript failed with " << status.message();
-        DLOG(ERROR) << "CreateUnboundScript failed with debug errors "
-                    << err_msg;
+        DLOG(ERROR) << "CreateUnboundScript failed with " << status.message();
         return status;
       }
       snapshot_context->cache_type = CacheType::kUnboundScript;
@@ -438,11 +533,10 @@ V8JsEngine::CreateCompilationContext(
 
     ROMA_VLOG(2) << "compilation context cache type is V8 snapshot";
   } else {
-    LOG(ERROR) << "CreateSnapshot failed with " << snapshot_status;
-    // err_msg may contain confidential message which only shows in DEBUG mode.
-    DLOG(ERROR) << "CreateSnapshot failed with debug errors " << err_msg;
+    DLOG(ERROR) << "CreateSnapshot failed with debug errors "
+                << snapshot_status;
     // Return the failure if it isn't caused by global WebAssembly.
-    if (!ExecutionUtils::CheckErrorWithWebAssembly(err_msg)) {
+    if (!ExecutionUtils::CheckErrorWithWebAssembly(snapshot_status.message())) {
       return snapshot_status;
     }
 
@@ -451,16 +545,10 @@ V8JsEngine::CreateCompilationContext(
       return absl::InternalError("Creating the isolate failed.");
     }
 
-    // TODO(b/298062607): deprecate err_msg, all exceptions should being caught
-    // by FormatAndLogError().
     if (auto status = ExecutionUtils::CreateUnboundScript(
-            snapshot_context->unbound_script, isolate_or->isolate(), code,
-            err_msg);
+            snapshot_context->unbound_script, isolate_or->isolate(), code);
         !status.ok()) {
-      LOG(ERROR) << "CreateUnboundScript failed with " << status.message();
-      // err_msg may contain confidential message which only shows in DEBUG
-      // mode.
-      DLOG(ERROR) << "CreateUnboundScript failed with debug errors " << err_msg;
+      DLOG(ERROR) << "CreateUnboundScript failed with " << status.message();
       return status;
     }
 
@@ -477,8 +565,7 @@ V8JsEngine::CreateCompilationContext(
 }
 
 absl::Status V8JsEngine::CompileWasmCodeArray(v8::Isolate* isolate,
-                                              absl::Span<const uint8_t> wasm,
-                                              std::string& err_msg) {
+                                              absl::Span<const uint8_t> wasm) {
   v8::Isolate::Scope isolate_scope(isolate);
   // Create a handle scope to keep the temporary object references.
   v8::HandleScope handle_scope(isolate);
@@ -515,28 +602,37 @@ absl::StatusOr<ExecutionResponse> V8JsEngine::ExecuteJs(
   v8::TryCatch try_catch(v8_isolate);
 
   // Create a context scope, which has essential side-effects for compilation
-  v8::Local<v8::Context> v8_context = v8::Context::New(v8_isolate);
+  v8::Local<v8::Context> v8_context;
+  if (current_compilation_context->cache_type == CacheType::kUnboundScript) {
+    // If cached JS contained global WebAssembly, the context associated with
+    // the isolate created in CreateCompilationContext() will not include the
+    // bound callbacks. Recreate the context and rebind the callbacks to ensure
+    // they can still be called with global WASM.
+    PS_RETURN_IF_ERROR(CreateV8Context(v8_isolate, v8_context));
+  } else {
+    v8_context = v8::Context::New(v8_isolate);
+  }
+
   v8::Context::Scope context_scope(v8_context);
 
-  std::string err_msg;
   // Binding UnboundScript to current context when the compilation context is
   // kUnboundScript.
   if (current_compilation_context->cache_type == CacheType::kUnboundScript) {
-    if (!ExecutionUtils::BindUnboundScript(
-            current_compilation_context->unbound_script, err_msg)) {
+    if (auto status = ExecutionUtils::BindUnboundScript(
+            current_compilation_context->unbound_script);
+        !status.ok()) {
       LOG(ERROR)
           << "BindUnboundScript failed with: Failed to bind unbound script.";
-      DLOG(ERROR) << "BindUnboundScript failed with debug errors " << err_msg;
-      return absl::InternalError("Failed to bind unbound script.");
+      DLOG(ERROR) << "BindUnboundScript failed with debug errors "
+                  << status.message();
+      return status;
     }
   }
 
   v8::Local<v8::Value> handler;
-  if (const auto status =
-          ExecutionUtils::GetJsHandler(function_name, handler, err_msg);
+  if (const auto status = ExecutionUtils::GetJsHandler(function_name, handler);
       !status.ok()) {
-    LOG(ERROR) << "GetJsHandler failed with " << status.message();
-    DLOG(ERROR) << "GetJsHandler failed with debug errors " << err_msg;
+    DLOG(ERROR) << "GetJsHandler failed with " << status.message();
     return status;
   }
 
@@ -581,12 +677,11 @@ absl::StatusOr<ExecutionResponse> V8JsEngine::ExecuteJs(
     }
     if (result->IsPromise()) {
       std::string error_msg;
-      if (!ExecutionUtils::V8PromiseHandler(v8_isolate, result, error_msg)) {
-        DLOG(ERROR) << "V8 Promise execution failed" << error_msg;
-        return FormatAndLogError(
-            v8_isolate, try_catch, v8_context,
-            "The code object async function execution failed.",
-            std::move(log_options));
+      if (auto status = ExecutionUtils::V8PromiseHandler(v8_isolate, result);
+          !status.ok()) {
+        DLOG(ERROR) << "V8 Promise execution failed" << status;
+        return FormatAndLogError(v8_isolate, try_catch, v8_context,
+                                 status.message(), std::move(log_options));
       }
     }
     execution_response.metrics[kHandlerCallMetricJsEngineDuration] =
@@ -672,19 +767,18 @@ absl::StatusOr<JsEngineExecutionResponse> V8JsEngine::CompileAndRunWasm(
     v8::Local<v8::Context> context(isolate->GetCurrentContext());
     v8::TryCatch try_catch(isolate);
 
-    std::string errors;
-    if (const auto status = ExecutionUtils::CompileRunWASM(input_code, errors);
+    if (const auto status = ExecutionUtils::CompileRunWASM(input_code);
         !status.ok()) {
-      LOG(ERROR) << status.message();
+      DLOG(ERROR) << status.message();
       return status;
     }
 
     if (!function_name.empty()) {
       v8::Local<v8::Value> wasm_handler;
-      if (auto status = ExecutionUtils::GetWasmHandler(function_name,
-                                                       wasm_handler, errors);
+      if (auto status =
+              ExecutionUtils::GetWasmHandler(function_name, wasm_handler);
           !status.ok()) {
-        LOG(ERROR) << status.message();
+        DLOG(ERROR) << status.message();
         return status;
       }
 
@@ -748,14 +842,11 @@ absl::StatusOr<JsEngineExecutionResponse> V8JsEngine::CompileAndRunJsWithWasm(
     const absl::flat_hash_map<std::string_view, std::string_view>& metadata,
     const RomaJsEngineCompilationContext& context)
     ABSL_LOCKS_EXCLUDED(console_mutex_) {
-  std::string err_msg;
   JsEngineExecutionResponse execution_response;
   std::shared_ptr<SnapshotCompilationContext> curr_comp_ctx;
   if (!context) {
-    PS_ASSIGN_OR_RETURN(
-        auto comp_context,
-        CreateCompilationContext(code, wasm, metadata, err_msg),
-        _ << "CreateCompilationContext failed with " << err_msg);
+    PS_ASSIGN_OR_RETURN(auto comp_context,
+                        CreateCompilationContext(code, wasm, metadata));
     execution_response.compilation_context = comp_context;
     curr_comp_ctx = std::static_pointer_cast<SnapshotCompilationContext>(
         comp_context.context);
@@ -764,15 +855,10 @@ absl::StatusOr<JsEngineExecutionResponse> V8JsEngine::CompileAndRunJsWithWasm(
     curr_comp_ctx =
         std::static_pointer_cast<SnapshotCompilationContext>(context.context);
     auto [uuid, id, min_log_level] = GetLogOptions(metadata);
-    {
-      absl::MutexLock lock(&console_mutex_);
-      console_->SetMinLogLevel(min_log_level);
-    }
 
     if (isolate_function_binding_) {
+      isolate_function_binding_->SetMinLogLevel(min_log_level);
       isolate_function_binding_->AddIds(uuid, id);
-      absl::MutexLock lock(&console_mutex_);
-      console_->SetIds(uuid, id);
     }
   }
   v8::Isolate* v8_isolate = curr_comp_ctx->isolate->isolate();
@@ -793,6 +879,11 @@ absl::StatusOr<JsEngineExecutionResponse> V8JsEngine::CompileAndRunJsWithWasm(
   StopWatchdogTimer();
   if (status_or_response.ok()) {
     execution_response.execution_response = status_or_response.value();
+    if (enable_profilers_) {
+      execution_response.execution_response.profiler_output =
+          static_cast<ProfilerIsolateWrapperImpl*>(curr_comp_ctx->isolate.get())
+              ->StopProfiling();
+    }
     return execution_response;
   }
   // Return timeout error if the watchdog called isolate terminate.

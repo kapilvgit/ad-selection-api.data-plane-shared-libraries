@@ -17,12 +17,9 @@
 load("@aws_nsm_crate_index//:defs.bzl", nsm_crate_repositories = "crate_repositories")
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
-load(
-    "@io_bazel_rules_closure//closure:repositories.bzl",
-    "rules_closure_dependencies",
-    "rules_closure_toolchains",
-)
-load("@io_bazel_rules_docker//repositories:deps.bzl", container_deps = "deps")
+load("@fuzzing_py_deps//:requirements.bzl", fuzzing_install_py_deps = "install_deps")
+load("@io_bazel_rules_closure//closure:repositories.bzl", "rules_closure_dependencies", "rules_closure_toolchains")
+load("@npm//:repositories.bzl", flatbuffers_npm_repositories = "npm_repositories")
 load("@rules_buf//gazelle/buf:repositories.bzl", "gazelle_buf_dependencies")
 load("//:deps.bzl", "buf_deps", "go_dependencies")
 
@@ -46,12 +43,13 @@ def _aws_nitro_kms_repos():
     )
 
 def deps4():
-    container_deps()
     gazelle_buf_dependencies()
     rules_closure_dependencies()
     rules_closure_toolchains()
     _aws_nitro_kms_repos()
     _go_deps()
+    flatbuffers_npm_repositories()
+    fuzzing_install_py_deps()
 
     # gazelle:repository_macro deps.bzl%buf_deps
     buf_deps()

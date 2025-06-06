@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "src/logger/request_context_logger.h"
 #include "src/public/cpio/interface/type_def.h"
 
 namespace google::scp::cpio {
@@ -29,8 +30,6 @@ using GcpWIPProvider = std::string;
 
 /// Configurations for private key vending endpoint.
 struct PrivateKeyVendingEndpoint {
-  virtual ~PrivateKeyVendingEndpoint() = default;
-
   /** @brief The account identity to access the cloud. This is used to create
    *  temporary credentials to access resources you normally has no access. In
    *  AWS, it is the IAM Role ARN. In GCP, it would be the service account.
@@ -54,8 +53,6 @@ struct PrivateKeyVendingEndpoint {
 
 /// Configuration for PrivateKeyClient.
 struct PrivateKeyClientOptions {
-  virtual ~PrivateKeyClientOptions() = default;
-
   /** @brief This endpoint hosts part of the private key. It is the source of
    * truth. If the part is missing here, the private key is treated as invalid
    * even the other parts can be found in other endpoints.
@@ -64,6 +61,10 @@ struct PrivateKeyClientOptions {
   /// This list of endpoints host the remaining parts of the private key.
   std::vector<PrivateKeyVendingEndpoint>
       secondary_private_key_vending_endpoints;
+  /// Log context for PS_VLOG and PS_LOG to enable console or otel logging
+  privacy_sandbox::server_common::log::PSLogContext& log_context =
+      const_cast<privacy_sandbox::server_common::log::NoOpContext&>(
+          privacy_sandbox::server_common::log::kNoOpContext);
 };
 }  // namespace google::scp::cpio
 

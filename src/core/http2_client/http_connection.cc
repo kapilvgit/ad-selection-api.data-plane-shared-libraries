@@ -31,6 +31,7 @@
 
 #include "absl/functional/bind_front.h"
 #include "absl/strings/str_cat.h"
+#include "absl/time/time.h"
 #include "src/core/common/global_logger/global_logger.h"
 #include "src/core/common/uuid/uuid.h"
 #include "src/core/interface/async_context.h"
@@ -147,7 +148,7 @@ ExecutionResult HttpConnection::Stop() noexcept {
 
   try {
     work_guard_->reset();
-    // Post io_service_->stop to make sure pervious tasks completed before
+    // Post io_service_->stop to make sure previous tasks completed before
     // stop io_service_.
     post(*io_service_, [this]() {
       io_service_->stop();
@@ -401,8 +402,9 @@ void HttpConnection::OnResponseCallback(
   if (http_response.status_code() !=
       static_cast<int>(errors::HttpStatusCode::OK)) {
     std::string headers_string;
-    for (auto header : http_response.header()) {
-      headers_string += header.first + " " + header.second.value + "|";
+    for (auto& header : http_response.header()) {
+      absl::StrAppend(&headers_string, header.first, " ", header.second.value,
+                      "|");
     }
     SCP_DEBUG_CONTEXT(kHttp2Client, http_context,
                       "Http response is not OK. Endpoint: %s, status code: %d, "
@@ -445,9 +447,13 @@ ExecutionResult HttpConnection::ConvertHttpStatusCodeToExecutionResult(
     const errors::HttpStatusCode status_code) noexcept {
   switch (status_code) {
     case errors::HttpStatusCode::OK:
+      [[fallthrough]];
     case errors::HttpStatusCode::CREATED:
+      [[fallthrough]];
     case errors::HttpStatusCode::ACCEPTED:
+      [[fallthrough]];
     case errors::HttpStatusCode::NO_CONTENT:
+      [[fallthrough]];
     case errors::HttpStatusCode::PARTIAL_CONTENT:
       return SuccessExecutionResult();
     case errors::HttpStatusCode::MULTIPLE_CHOICES:

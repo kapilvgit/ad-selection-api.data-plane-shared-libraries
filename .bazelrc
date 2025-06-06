@@ -1,9 +1,11 @@
+common --@aspect_rules_ts//ts:skipLibCheck=honor_tsconfig
+common --@aspect_rules_ts//ts:default_to_tsc_transpiler
+
 build --announce_rc
 build --verbose_failures
 build --compilation_mode=opt
-build --output_filter='^//((?!(third_party):).)*$'`
+build --output_filter='^//((?!(third_party):).)*$'
 build --color=yes
-build --@io_bazel_rules_docker//transitions:enable=false
 build --config=cpp
 build --config=roma_sandboxed
 build --config=otel
@@ -19,17 +21,40 @@ build:cpp --client_env=BAZEL_CXXOPTS=-std=c++17
 build:cpp --cxxopt=-std=c++17
 build:cpp --client_env=CC=clang
 build:cpp --copt=-Werror=return-type
-build:cpp --copt=-Werror=thread-safety-analysis
+build:cpp --copt=-Werror=thread-safety
 build:cpp --per_file_copt=external/com_github_google_quiche/quiche@-Wno-private-header
 build:cpp --per_file_copt=external/nitrokmscli_.*\.c@-Wno-int-conversion
 build:cpp --per_file_copt=src/roma/roma_service/.*@-fconstexpr-steps=1271242
+build:cpp --per_file_copt=src/roma/byob/.*@-fconstexpr-steps=1271242
+build:cpp --per_file_copt=external/(json_c|nitrokmscli_).*\.c@-Wno-implicit-function-declaration
+build:cpp --config=cpp_nowarn
 
 build:cpp_nowarn --copt=-Werror
 build:cpp_nowarn --per_file_copt=external/.*@-Wno-error
 build:cpp_nowarn --per_file_copt=src/.*_test\.cc@-Wno-unused-variable
-build:cpp_nowarn --per_file_copt=src/(metric|telemetry)/.*@-Wno-deprecated-declarations
+build:cpp_nowarn --per_file_copt=src/(metric|telemetry|encryption)/.*@-Wno-deprecated-declarations
 build:cpp_nowarn --per_file_copt=src/cpio/client_providers/.*_client_provider/.*@-Wno-deprecated-declarations
 build:cpp_nowarn --per_file_copt=src/core/blob_storage_provider/gcp/.*@-Wno-deprecated-declarations
+build:cpp_nowarn --per_file_copt=src/roma/(roma_service|sandbox|benchmark|native_function_grpc_server)/.*.cc@-Wno-deprecated-declarations
+build:cpp_nowarn --per_file_copt=src/(communication|roma)/.*\.cc@-Wno-deprecated-declarations,-Wno-vla-cxx-extension,-Wno-unknown-warning-option
+
+# Disabled due to `Code` being deprecated in tink_cc
+build:cpp_nowarn --per_file_copt=src/public/cpio/adapters/crypto_client/crypto_client\.cc@-Wno-deprecated-declarations
+build:cpp_nowarn --per_file_copt=src/public/cpio/adapters/crypto_client/crypto_client_test\.cc@-Wno-deprecated-declarations
+
+# Disabled due to `comms` and `Pointable` being deprecated in sandboxed_api
+build:cpp_nowarn --per_file_copt=src/roma/logging/logging_.*test\.cc@-Wno-deprecated-declarations
+build:cpp_nowarn --per_file_copt=src/roma/tools/v8_cli.*@-Wno-deprecated-declarations
+build:cpp_nowarn --per_file_copt=src/experimental/kevinbnaughton/roma_grpc/.*@-Wno-deprecated-declarations
+build:cpp_nowarn --per_file_copt=src/roma/byob/.*@-Wno-deprecated-declarations
+build:cpp_nowarn --per_file_copt=testing/roma/.*@-Wno-deprecated-declarations
+
+# Disabled due to necessary macro collision introduced in src/roma/sandbox/js_engine/v8_engine/v8.console.h
+build:cpp_nowarn --per_file_copt=src/roma/sandbox/worker/v8_engine_worker_test\.cc@-Wno-macro-redefined
+build:cpp_nowarn --per_file_copt=src/roma/sandbox/js_engine/v8_engine/.*@-Wno-macro-redefined
+build:cpp_nowarn --per_file_copt=src/roma/benchmark/.*@-Wno-macro-redefined
+build:cpp_nowarn --per_file_copt=src/roma/sandbox/worker_api/sapi/worker_wrapper.*@-Wno-macro-redefined
+build:cpp_nowarn --per_file_copt=src/roma/sandbox/worker_api/sapi/utils.cc@-Wno-macro-redefined
 
 build:clang-tidy --aspects @bazel_clang_tidy//clang_tidy:clang_tidy.bzl%clang_tidy_aspect
 build:clang-tidy --output_groups=report
@@ -37,6 +62,10 @@ build:clang-tidy --@bazel_clang_tidy//:clang_tidy_config=//:clang_tidy_config
 
 build:roma_sandboxed --per_file_copt=.*sandboxed_api.*@-Wno-return-type
 build:roma_sandboxed --cxxopt=-fbracket-depth=512
+
+# depend_on_what_you_use build check.
+build:dwyu --aspects=//third_party:depend_on_what_you_use.bzl%dwyu
+build:dwyu --output_groups=dwyu
 
 try-import %workspace%/builders/.coverage.bazelrc
 
@@ -54,6 +83,7 @@ build:asan_common --copt=-fno-omit-frame-pointer
 build:asan_common --linkopt=-fsanitize=address
 build:asan_common --linkopt=-fuse-ld=lld
 build:asan_common --test_tag_filters=-noasan
+build:asan_common --fission=yes
 # TODO(b/293876281): Re-enable ODR violation checking once it's fixed in the
 # ZLib library that we depend on.
 build:asan_common --action_env=ASAN_OPTIONS=detect_leaks=1:color=always:detect_odr_violation=0
@@ -112,6 +142,9 @@ build:ubsan --copt=-O1
 build:ubsan --copt=-fno-omit-frame-pointer
 build:ubsan --per_file_copt=//src/roma/sandbox/worker_api/.*@-DUNDEFINED_BEHAVIOR_SANITIZER
 build:ubsan --linkopt=-lubsan
+build:ubsan --linkopt=-fsanitize=undefined
+build:ubsan --copt=-fno-sanitize=function
+build:ubsan --copt=-fno-sanitize=vptr
 build:ubsan --test_tag_filters=-noubsan
 
 # Required to build OpenTelemetry with Abseil
@@ -126,7 +159,11 @@ build:instance_gcp --//:instance=gcp
 
 build:instance_aws --//:instance=aws
 
+build:instance_azure --//:instance=azure
+
 build:platform_aws --//:platform=aws
+
+build:platform_azure --//:platform=azure
 
 build:platform_gcp --//:platform=gcp
 
@@ -143,5 +180,28 @@ build:gcp_gcp --config=platform_gcp
 build:aws_aws --config=instance_aws
 build:aws_aws --config=platform_aws
 
-build:non_prod --//:build_flavor=non_prod
+
+build:local_azure --config=instance_local
+build:local_azure --config=platform_azure
+
+build:azure_azure --config=instance_azure
+build:azure_azure --config=platform_azure
 build:prod --//:build_flavor=prod
+build:non_prod --//:build_flavor=non_prod
+build:non_sapi --//:build_flavor=non_sapi
+
+# Enable optimized build.
+build:benchmark --compilation_mode=opt
+# Link the benchmark test binary statically.
+build:benchmark --dynamic_mode=off
+# Generate `-gmlt` level of debug information. This ensures that inlined
+# portions of the stacks and the source filename and line numbers are included
+# in the debug information and become available in `pprof` profiles.
+build:benchmark --copt=-gmlt
+# Disable (note the minus sign after the `=`) using `-fPIC` for binaries in
+# `opt` compilation mode.
+build:benchmark --features=-prefer_pic_for_opt_binaries
+
+# Setup java compiler
+build --extra_toolchains=@graalvm//:toolchain
+build --java_runtime_version=graalvm_20

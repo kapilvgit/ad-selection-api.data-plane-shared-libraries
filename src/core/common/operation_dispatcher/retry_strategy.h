@@ -21,7 +21,6 @@
 #include <cmath>
 
 #include "src/core/interface/type_def.h"
-#include "src/public/core/interface/execution_result.h"
 
 namespace google::scp::core::common {
 
@@ -98,6 +97,7 @@ class RetryStrategy {
       case RetryStrategyType::Linear:
         return retry_count * delay_duration_ms_;
       case RetryStrategyType::Exponential:
+        [[fallthrough]];
       default:
         return pow(2, retry_count - 1) * delay_duration_ms_;
     }

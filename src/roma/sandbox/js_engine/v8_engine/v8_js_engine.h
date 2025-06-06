@@ -24,9 +24,9 @@
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/string_view.h"
 #include "include/libplatform/libplatform.h"
 #include "include/v8.h"
+#include "src/roma/config/config.h"
 #include "src/roma/interface/roma.h"
 #include "src/roma/sandbox/js_engine/js_engine.h"
 #include "src/roma/sandbox/js_engine/v8_engine/v8_isolate_function_binding.h"
@@ -46,8 +46,13 @@ class V8JsEngine : public JsEngine {
  public:
   V8JsEngine(std::unique_ptr<V8IsolateFunctionBinding>
                  isolate_function_binding = nullptr,
+             bool skip_v8_cleanup = false, bool enable_profilers = false,
              const JsEngineResourceConstraints& v8_resource_constraints =
-                 JsEngineResourceConstraints());
+                 JsEngineResourceConstraints(),
+             bool logging_function_set = false,
+             bool disable_udf_stacktraces_in_response = false);
+
+  ~V8JsEngine() override;
 
   void Run() override;
 
@@ -97,11 +102,10 @@ class V8JsEngine : public JsEngine {
    *
    * @param startup_data
    * @param js_code
-   * @param err_msg
    * @return absl::Status
    */
   absl::Status CreateSnapshot(v8::StartupData& startup_data,
-                              std::string_view js_code, std::string& err_msg);
+                              std::string_view js_code);
   /**
    * @brief Create a Snapshot object with start up data containing global
    * objects that can be directly referenced in the JS code.
@@ -109,13 +113,11 @@ class V8JsEngine : public JsEngine {
    * @param startup_data
    * @param wasm
    * @param metadata
-   * @param err_msg
    * @return absl::Status
    */
   absl::Status CreateSnapshotWithGlobals(
       v8::StartupData& startup_data, absl::Span<const std::uint8_t> wasm,
-      const absl::flat_hash_map<std::string_view, std::string_view>& metadata,
-      std::string& err_msg);
+      const absl::flat_hash_map<std::string_view, std::string_view>& metadata);
   /**
    * @brief Create a Compilation Context object which wraps a object of
    * SnapshotCompilationContext in the context.
@@ -123,22 +125,17 @@ class V8JsEngine : public JsEngine {
    * @param code
    * @param wasm
    * @param metadata
-   * @param err_msg
    * @return
    * absl::StatusOr<js_engine::RomaJsEngineCompilationContext>
    */
   absl::StatusOr<js_engine::RomaJsEngineCompilationContext>
   CreateCompilationContext(
       std::string_view code, absl::Span<const std::uint8_t> wasm,
-      const absl::flat_hash_map<std::string_view, std::string_view>& metadata,
-      std::string& err_msg);
+      const absl::flat_hash_map<std::string_view, std::string_view>& metadata);
 
   /// @brief Create a v8 isolate instance.  Returns nullptr on failure.
   virtual std::unique_ptr<V8IsolateWrapper> CreateIsolate(
       const v8::StartupData& startup_data = {nullptr, 0});
-
-  /// @brief Dispose v8 isolate.
-  virtual void DisposeIsolate();
 
   /**
    * @brief Start timing the execution running in the isolate with watchdog.
@@ -181,12 +178,10 @@ class V8JsEngine : public JsEngine {
    *
    * @param isolate
    * @param wasm
-   * @param err_msg
    * @return absl::Status
    */
   absl::Status CompileWasmCodeArray(v8::Isolate* isolate,
-                                    absl::Span<const std::uint8_t> wasm,
-                                    std::string& err_msg);
+                                    absl::Span<const std::uint8_t> wasm);
 
   /**
    * @brief Log `msg` using logging function in host process with severity from
@@ -230,9 +225,13 @@ class V8JsEngine : public JsEngine {
   /// timeouts the execution in set time.
   std::unique_ptr<roma::worker::ExecutionWatchDog> execution_watchdog_{nullptr};
 
-  V8Console* console(v8::Isolate* isolate) ABSL_LOCKS_EXCLUDED(console_mutex_);
+  V8Console* console() ABSL_LOCKS_EXCLUDED(console_mutex_);
   std::unique_ptr<V8Console> console_ ABSL_GUARDED_BY(console_mutex_);
   absl::Mutex console_mutex_;
+  const bool skip_v8_cleanup_;
+  const bool enable_profilers_;
+  const bool logging_function_set_;
+  const bool disable_udf_stacktraces_in_response_;
 };
 }  // namespace google::scp::roma::sandbox::js_engine::v8_js_engine
 

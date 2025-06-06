@@ -18,6 +18,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/functional/any_invocable.h"
@@ -46,7 +47,8 @@ class MetricRouter {
 
   MetricRouter(std::unique_ptr<MeterProvider> provider,
                std::string_view service, std::string_view version,
-               PrivacyBudget fraction, telemetry::BuildDependentConfig config);
+               PrivacyBudget fraction,
+               std::unique_ptr<telemetry::BuildDependentConfig> config);
 
   ~MetricRouter() = default;
 
@@ -70,6 +72,14 @@ class MetricRouter {
 
   const DifferentiallyPrivate<MetricRouter>& dp() const { return dp_; }
 
+  // Forwards DifferentialPrivate's ResetPartitionAsync to ContextMap.
+  void ResetPartitionAsync(const std::vector<std::string_view>& metric_list,
+                           const std::vector<std::string>& partition_list,
+                           int max_partions_contributed) {
+    dp_.ResetPartitionAsync(metric_list, partition_list,
+                            max_partions_contributed);
+  }
+
   // Add callback for observerable metric, must be Privacy:kNonImpacting
   // Gauge. callback is use to read value, return a map of <string, double>,
   // string for "label" attribute, double for the value of metric.
@@ -84,7 +94,7 @@ class MetricRouter {
       const Definition<T, privacy, instrument>& definition,
       absl::flat_hash_map<std::string, double> (*callback)());
 
-  telemetry::BuildDependentConfig& metric_config() { return metric_config_; }
+  telemetry::BuildDependentConfig& metric_config() { return *metric_config_; }
 
  private:
   friend class MetricRouterTest;
@@ -114,7 +124,7 @@ class MetricRouter {
       observerable_;
   std::unique_ptr<MeterProvider> provider_;
   Meter* meter_;
-  telemetry::BuildDependentConfig metric_config_;
+  std::unique_ptr<telemetry::BuildDependentConfig> metric_config_;
   DifferentiallyPrivate<MetricRouter> dp_;
 };
 
@@ -156,13 +166,15 @@ auto* MetricRouter::GetCounterInstrument(const DefinitionName& definition,
     using U = api::UpDownCounter<int64_t>;
     return GetInstrument<U>(definition.name_, [&definition, this]() {
       return std::unique_ptr<U>(meter_->CreateInt64UpDownCounter(
-          definition.name_.data(), definition.description_.data()));
+          metric_config_->GetName(definition).data(),
+          metric_config_->GetDescription(definition).data()));
     });
   } else if constexpr (std::is_same_v<double, T>) {
     using U = api::UpDownCounter<double>;
     return GetInstrument<U>(definition.name_, [&definition, this]() {
       return std::unique_ptr<U>(meter_->CreateDoubleUpDownCounter(
-          definition.name_.data(), definition.description_.data()));
+          metric_config_->GetName(definition).data(),
+          metric_config_->GetDescription(definition).data()));
     });
   } else {
     static_assert(dependent_false_v<T>);
@@ -194,7 +206,7 @@ absl::Status MetricRouter::LogSafe(
   } else if constexpr (instrument == Instrument::kUpDownCounter) {
     GetCounterInstrument(definition, value)->Add(value, attribute);
   } else if constexpr (instrument == Instrument::kPartitionedCounter) {
-    attribute.emplace(definition.partition_type_, partition);
+    attribute.emplace(metric_config_->GetPartitionType(definition), partition);
     GetCounterInstrument(definition, value)->Add(value, attribute);
   } else if constexpr (instrument == Instrument::kGauge) {
     return absl::UnimplementedError("gauge not done");

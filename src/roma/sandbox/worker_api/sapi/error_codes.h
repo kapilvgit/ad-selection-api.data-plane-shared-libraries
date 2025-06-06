@@ -17,6 +17,8 @@
 #ifndef ROMA_SANDBOX_WORKER_API_SAPI_ERROR_CODES_H_
 #define ROMA_SANDBOX_WORKER_API_SAPI_ERROR_CODES_H_
 
+#include <string_view>
+
 #include "absl/status/status.h"
 
 // It would be preferable to pass an absl::Status in and out of SAPI, but that's
@@ -45,6 +47,7 @@ enum class SapiStatusCode : int {
 // Convert the status code enum value into an absl::Status, with a message.
 // SAPI changes the namespace that the enum uses and so it's easier to convert
 // it to an int and pass that around instead.
-absl::Status SapiStatusCodeToAbslStatus(int int_status_code);
+absl::Status SapiStatusCodeToAbslStatus(int int_status_code,
+                                        std::string_view err_msg = "");
 
 #endif  // ROMA_SANDBOX_WORKER_API_SAPI_ERROR_CODES_H_

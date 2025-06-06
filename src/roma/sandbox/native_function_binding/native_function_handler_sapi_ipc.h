@@ -18,19 +18,24 @@
 #define ROMA_SANDBOX_NATIVE_FUNCTION_BINDING_NATIVE_FUNCTION_HANDLER_SAPI_IPC_H_
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
-#include "absl/status/statusor.h"
+#include "absl/base/thread_annotations.h"
+#include "absl/container/flat_hash_set.h"
 #include "sandboxed_api/sandbox2/comms.h"
+#include "src/roma/interface/roma.h"
 #include "src/roma/logging/logging.h"
 #include "src/roma/metadata_storage/metadata_storage.h"
 #include "src/roma/sandbox/constants/constants.h"
 #include "src/roma/sandbox/native_function_binding/rpc_wrapper.pb.h"
+#include "src/util/execution_token.h"
 
 #include "native_function_table.h"
 
@@ -39,6 +44,8 @@ using google::scp::roma::sandbox::constants::kRequestUuid;
 
 inline constexpr std::string_view kFailedNativeHandlerExecution =
     "ROMA: Failed to execute the C++ function.";
+inline constexpr std::string_view kRequestCanceled =
+    "ROMA: Execution for request has been canceled.";
 inline constexpr std::string_view kCouldNotFindFunctionName =
     "ROMA: Could not find C++ function by name.";
 inline constexpr std::string_view kCouldNotFindMetadata =
@@ -64,18 +71,20 @@ class NativeFunctionHandlerSapiIpc {
   NativeFunctionHandlerSapiIpc(NativeFunctionTable<TMetadata>* function_table,
                                MetadataStorage<TMetadata>* metadata_storage,
                                const std::vector<int>& local_fds,
-                               std::vector<int> remote_fds)
+                               std::vector<int> remote_fds,
+                               bool skip_callback_for_cancelled = true)
       : stop_(false),
         function_table_(function_table),
         metadata_storage_(metadata_storage),
-        remote_fds_(std::move(remote_fds)) {
+        remote_fds_(std::move(remote_fds)),
+        skip_callback_for_cancelled_(skip_callback_for_cancelled) {
     ipc_comms_.reserve(local_fds.size());
     for (const int local_fd : local_fds) {
       ipc_comms_.emplace_back(local_fd);
     }
   }
 
-  void Run() {
+  void Run() ABSL_LOCKS_EXCLUDED(canceled_requests_mu_) {
     ROMA_VLOG(9) << "Calling native function handler";
     for (int i = 0; i < ipc_comms_.size(); i++) {
       function_handler_threads_.emplace_back([this, i] {
@@ -94,13 +103,43 @@ class NativeFunctionHandlerSapiIpc {
 
           auto io_proto = wrapper_proto.mutable_io_proto();
           const auto& invocation_req_uuid = wrapper_proto.request_uuid();
+          if (skip_callback_for_cancelled_) {
+            absl::MutexLock lock(&canceled_requests_mu_);
+            if (const auto it = canceled_requests_.find(invocation_req_uuid);
+                it != canceled_requests_.end()) {
+              // TODO(b/353555061): Avoid execution errors that relate to
+              // cancellation.
+              io_proto->mutable_errors()->Add(std::string(kRequestCanceled));
+              ROMA_VLOG(1) << kRequestCanceled;
+              comms.SendProtoBuf(wrapper_proto);
+              // Remove the canceled request's execution token from
+              // canceled_requests_ to prevent bloat.
+              canceled_requests_.erase(it);
+              continue;
+            }
+          }
 
           // Get function name
           if (const auto function_name = wrapper_proto.function_name();
               !function_name.empty()) {
-            if (auto reader = ScopedValueReader<TMetadata>::Create(
-                    metadata_storage_->GetMetadataMap(), invocation_req_uuid);
-                !reader.ok()) {
+            if (metadata_storage_ == nullptr) {
+              if constexpr (std::is_default_constructible<TMetadata>::value) {
+                TMetadata dummy_metadata;
+                if (FunctionBindingPayload<TMetadata> wrapper{
+                        *io_proto,
+                        dummy_metadata,
+                    };
+                    !function_table_->Call(function_name, wrapper).ok()) {
+                  // If execution failed, add errors to the proto to return
+                  io_proto->mutable_errors()->Add(
+                      std::string(kFailedNativeHandlerExecution));
+                  ROMA_VLOG(1) << kFailedNativeHandlerExecution;
+                }
+              }
+            } else if (auto reader = ScopedValueReader<TMetadata>::Create(
+                           metadata_storage_->GetMetadataMap(),
+                           invocation_req_uuid);
+                       !reader.ok()) {
               // If mutex can't be found, add errors to the proto to return
               io_proto->mutable_errors()->Add(std::string(kCouldNotFindMutex));
               ROMA_VLOG(1) << kCouldNotFindMutex;
@@ -158,6 +197,12 @@ class NativeFunctionHandlerSapiIpc {
     }
   }
 
+  void PreventCallbacks(ExecutionToken token)
+      ABSL_LOCKS_EXCLUDED(canceled_requests_mu_) {
+    absl::MutexLock lock(&canceled_requests_mu_);
+    canceled_requests_.insert(std::move(token).value);
+  }
+
  private:
   bool stop_ ABSL_GUARDED_BY(stop_mutex_);
   absl::Mutex stop_mutex_;
@@ -167,10 +212,16 @@ class NativeFunctionHandlerSapiIpc {
   MetadataStorage<TMetadata>* metadata_storage_;
   std::vector<std::thread> function_handler_threads_;
   std::vector<sandbox2::Comms> ipc_comms_;
+  absl::flat_hash_set<std::string> canceled_requests_
+      ABSL_GUARDED_BY(canceled_requests_mu_);
+  absl::Mutex canceled_requests_mu_;
   // We need the remote file descriptors to unblock the local ones when stopping
   std::vector<int> remote_fds_;
+  bool skip_callback_for_cancelled_;
 };
 
+template <typename T>
+using NativeFunctionHandler = NativeFunctionHandlerSapiIpc<T>;
 }  // namespace google::scp::roma::sandbox::native_function_binding
 
 #endif  // ROMA_SANDBOX_NATIVE_FUNCTION_BINDING_NATIVE_FUNCTION_HANDLER_SAPI_IPC_H_

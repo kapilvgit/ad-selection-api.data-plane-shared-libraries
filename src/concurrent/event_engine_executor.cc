@@ -12,11 +12,12 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 
-#include "src/concurrent/event_engine_executor.h"
+#include "event_engine_executor.h"
 
 #include <utility>
 
 #include "absl/time/clock.h"
+#include "absl/time/time.h"
 
 namespace privacy_sandbox::server_common {
 
@@ -29,14 +30,16 @@ TaskId EventEngineExecutor::RunAfter(const absl::Duration duration,
   grpc_event_engine::experimental::EventEngine::TaskHandle task_handle =
       event_engine_->RunAfter(ToChronoNanoseconds(duration),
                               std::move(closure));
-
-  return {task_handle.keys[0], task_handle.keys[1]};
+  return {
+      .keys = {task_handle.keys[0], task_handle.keys[1]},
+  };
 }
 
 bool EventEngineExecutor::Cancel(TaskId task_id) {
-  grpc_event_engine::experimental::EventEngine::TaskHandle handle = {
-      task_id.keys[0], task_id.keys[1]};
-  return event_engine_->Cancel(std::move(handle));
+  return event_engine_->Cancel(
+      grpc_event_engine::experimental::EventEngine::TaskHandle{
+          .keys = {task_id.keys[0], task_id.keys[1]},
+      });
 }
 
 }  // namespace privacy_sandbox::server_common

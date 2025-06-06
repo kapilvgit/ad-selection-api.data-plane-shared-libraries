@@ -14,14 +14,15 @@
 
 """Further initialization of shared control plane dependencies."""
 
+load("@aspect_rules_js//npm:npm_import.bzl", "npm_translate_lock", "pnpm_repository")
 load("@com_github_google_rpmpack//:deps.bzl", "rpmpack_dependencies")
 load("@com_github_googleapis_google_cloud_cpp//bazel:google_cloud_cpp_deps.bzl", "google_cloud_cpp_deps")
 load("@com_google_googleapis//:repository_rules.bzl", "switched_rules_by_language")
 load("@com_google_protobuf//:protobuf_deps.bzl", "protobuf_deps")
 load("@com_google_sandboxed_api//sandboxed_api/bazel:llvm_config.bzl", "llvm_disable_optional_support_deps")
 load("@com_google_sandboxed_api//sandboxed_api/bazel:sapi_deps.bzl", "sapi_deps")
+load("@depend_on_what_you_use//:setup_step_2.bzl", dwyu_setup_step_2 = "setup_step_2")
 load("@google_benchmark//:bazel/benchmark_deps.bzl", "benchmark_deps")
-load("@io_bazel_rules_docker//repositories:repositories.bzl", container_repositories = "repositories")
 load("@io_opentelemetry_cpp//bazel:repository.bzl", "opentelemetry_cpp_deps")
 load("@rules_buf//buf:repositories.bzl", "rules_buf_dependencies", "rules_buf_toolchains")
 load("@rules_fuzzing//fuzzing:init.bzl", "rules_fuzzing_init")
@@ -33,6 +34,16 @@ load("@tink_cc//:tink_cc_deps.bzl", "tink_cc_deps")
 load("@v8_python_deps//:requirements.bzl", install_v8_python_deps = "install_deps")
 load("//third_party:aws_nitro_kms_deps.bzl", "aws_nitro_kms_repos")
 load("//third_party:bazel_rules_closure.bzl", "bazel_rules_closure")
+
+def _npm_deps():
+    pnpm_repository(name = "pnpm")
+
+    npm_translate_lock(
+        name = "npm",
+        npmrc = Label("//:.npmrc"),
+        pnpm_lock = Label("//:pnpm-lock.yaml"),
+        verify_node_modules_ignored = Label("//:.bazelignore"),
+    )
 
 def deps3():
     protobuf_deps()
@@ -48,9 +59,11 @@ def deps3():
     rpmpack_dependencies()
     install_v8_python_deps()
     rules_buf_dependencies()
-    rules_buf_toolchains(version = "v1.27.1")
+    rules_buf_toolchains(
+        version = "v1.39.0",
+        sha256 = "a13fa6afecb3ba0cbf1b1fd4ca2a0f1d0cd935619d20a6b9a069aab9fb31ed05",
+    )
     tink_cc_deps()
-    container_repositories()
     switched_rules_by_language(
         name = "com_google_googleapis_imports",
         cc = True,
@@ -71,5 +84,19 @@ def deps3():
             "@aws-nitro-enclaves-nsm-api//:nsm-test/Cargo.toml",
         ],
     )
+
+    # repin deps using:
+    #   EXTRA_DOCKER_RUN_ARGS="--env=CARGO_BAZEL_REPIN=1" builders/tools/bazel-debian sync --only=cddl_crate_index
+    crates_repository(
+        name = "cddl_crate_index",
+        quiet = False,
+        cargo_lockfile = Label("cddl/Cargo.lock"),
+        lockfile = Label("cddl/cargo-bazel-lock.json"),
+        manifests = [
+            Label("cddl/Cargo.toml"),
+        ],
+    )
     aws_nitro_kms_repos()
     benchmark_deps()
+    dwyu_setup_step_2()
+    _npm_deps()

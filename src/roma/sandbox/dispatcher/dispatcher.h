@@ -24,18 +24,22 @@
 #include <vector>
 
 #include "absl/base/thread_annotations.h"
+#include "absl/functional/any_invocable.h"
+#include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
 #include "src/roma/interface/roma.h"
+#include "src/roma/sandbox/worker_api/sapi/worker_params.pb.h"
 #include "src/roma/sandbox/worker_api/sapi/worker_sandbox_api.h"
+#include "src/util/execution_token.h"
 #include "src/util/status_macro/status_macros.h"
 
 #include "request_converter.h"
 #include "request_validator.h"
 
 namespace google::scp::roma::sandbox::dispatcher {
-class Dispatcher {
+class Dispatcher final {
  public:
   // Starts a thread for each worker.
   Dispatcher(absl::Span<worker_api::WorkerSandboxApi> workers,
@@ -67,7 +71,7 @@ class Dispatcher {
       ABSL_LOCKS_EXCLUDED(mu_) {
     PS_RETURN_IF_ERROR(AssertRequestIsValid(request));
     ::worker_api::WorkerParamsProto param = RequestToProto(std::move(request));
-    absl::MutexLock l(&mu_);
+    absl::MutexLock lock(&mu_);
     if (requests_.size() == max_pending_requests_) {
       return absl::ResourceExhaustedError(
           "Dispatch is disallowed since the number of unfinished requests is "
@@ -79,6 +83,8 @@ class Dispatcher {
     });
     return absl::OkStatus();
   }
+
+  void Cancel(const ExecutionToken& token);
 
  private:
   struct Request {

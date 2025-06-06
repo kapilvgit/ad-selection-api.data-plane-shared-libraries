@@ -19,14 +19,14 @@
 
 #include <memory>
 
+#include "absl/time/time.h"
 #include "src/core/common/operation_dispatcher/operation_dispatcher.h"
+#include "src/core/http2_client/error_codes.h"
+#include "src/core/http2_client/http_connection_pool.h"
 #include "src/core/interface/async_context.h"
 #include "src/core/interface/async_executor_interface.h"
 #include "src/core/interface/http_client_interface.h"
 #include "src/public/core/interface/execution_result.h"
-
-#include "error_codes.h"
-#include "http_connection_pool.h"
 
 namespace google::scp::core {
 
@@ -70,9 +70,7 @@ class HttpClient : public HttpClientInterface {
   explicit HttpClient(AsyncExecutorInterface* async_executor,
                       HttpClientOptions options = HttpClientOptions());
 
-  ExecutionResult Init() noexcept override;
-  ExecutionResult Run() noexcept override;
-  ExecutionResult Stop() noexcept override;
+  ExecutionResult Stop() noexcept;
 
   ExecutionResult PerformRequest(
       AsyncContext<HttpRequest, HttpResponse>& http_context) noexcept override;

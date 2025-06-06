@@ -22,9 +22,11 @@
 #include <vector>
 
 #include "absl/log/check.h"
+#include "absl/status/statusor.h"
 #include "absl/synchronization/blocking_counter.h"
 #include "absl/synchronization/notification.h"
 #include "absl/time/time.h"
+#include "src/roma/roma_service/roma_service.h"
 
 namespace google::scp::roma::benchmark {
 namespace {
@@ -41,7 +43,7 @@ FakeBaServer::FakeBaServer(DispatchConfig config) {
   roma_service_ =
       std::make_unique<google::scp::roma::sandbox::roma_service::RomaService<>>(
           std::move(config));
-  CHECK(roma_service_->Init().ok());
+  CHECK_OK(roma_service_->Init());
 }
 
 FakeBaServer::~FakeBaServer() { CHECK_OK(roma_service_->Stop()); }
@@ -51,17 +53,16 @@ void FakeBaServer::LoadSync(std::string_view version,
   LoadRequest request;
   request.version_string = version;
   request.js = js;
-  // Note: This is a BlockingCounter rather than a Notificaiton because that's
+  // Note: This is a BlockingCounter rather than a Notification because that's
   // what B&A uses.
   absl::BlockingCounter is_loading(1);
 
-  absl::Status try_load = roma_service_->LoadCodeObj(
+  CHECK_OK(roma_service_->LoadCodeObj(
       std::make_unique<LoadRequest>(request),
       [&is_loading](absl::StatusOr<LoadResponse> res) {
         CHECK_OK(res);
         is_loading.DecrementCount();
-      });
-  CHECK_OK(try_load);
+      }));
   is_loading.Wait();
 }
 

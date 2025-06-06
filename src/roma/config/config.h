@@ -19,6 +19,7 @@
 
 #include <stddef.h>
 
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <string>
@@ -28,14 +29,13 @@
 
 #include <grpcpp/impl/service_type.h>
 
+#include "src/roma/config/function_binding_object_v2.h"
 #include "src/roma/native_function_grpc_server/interface.h"
-
-#include "function_binding_object_v2.h"
+#include "src/roma/native_function_grpc_server/proto/callback_service.grpc.pb.h"
 
 namespace google::scp::roma {
 
-inline constexpr size_t kKB = 1024u;
-inline constexpr size_t kMB = kKB * 1024;
+inline constexpr size_t kMB = 1 << 20;
 inline constexpr std::string_view kRomaVlogLevel = "ROMA_VLOG_LEVEL";
 inline constexpr size_t kDefaultBufferSizeInMb = 1;
 
@@ -60,9 +60,36 @@ struct JsEngineResourceConstraints {
   size_t maximum_heap_size_in_mb = 0;
 };
 
-template <typename TMetadata = DefaultMetadata>
+struct V8CompilerOptions {
+  /**
+   * @brief Enable Turbofan, one of V8's optimizing compilers.
+   *
+   */
+  bool enable_turbofan = false;
+
+  /**
+   * @brief Enable Maglev, one of V8's optimizing compilers.
+   *
+   */
+  bool enable_maglev = false;
+
+  /**
+   * @brief Enable Turboshaft, one of V8's optimizing compilers. Enabled by
+   * default.
+   *
+   */
+  bool enable_turboshaft = true;
+};
+
+template <typename T = DefaultMetadata>
 class Config {
  public:
+  using TMetadata = T;
+
+  Config()
+      : factories_(std::make_unique<
+                   std::vector<grpc_server::FactoryFunction<TMetadata>>>()),
+        callback_service_(std::make_unique<CallbackService>()) {}
   /**
    * @brief The number of workers that Roma will start. If no valid value is
    * configured here, the default number of workers (number of host CPUs) will
@@ -96,6 +123,34 @@ class Config {
    *
    */
   bool enable_native_function_grpc_server = false;
+
+  /* @brief Enable V8's Heap and Sample-based CPU profiler.
+   */
+  bool enable_profilers = false;
+
+  /**
+   * @brief Disable returning UDF stack trace in response.
+   */
+  bool disable_udf_stacktraces_in_response = false;
+
+  /**
+   * @brief Indicates whether a custom logging function has been registered.
+   *
+   */
+  bool logging_function_set = false;
+
+  /**
+   * @brief Enable metadata storage.
+   *
+   */
+  bool enable_metadata_storage = true;
+
+  /**
+   * @brief Enable cancellation of callbacks for requests that are currently
+   * executing.
+   *
+   */
+  bool skip_callback_for_cancelled = true;
 
   /**
    * @brief Function that can be set to overwrite the default memory check
@@ -159,10 +214,11 @@ class Config {
 
   /**
    * @brief Register an async gRPC service and handlers for all gRPC methods on
-   * this service. Allows clients (V8 and arbitrary binaries) to invoke gRPC
-   * methods in the host process. Config has ownership of all registered
-   * services and associated factory functions, and passes pointers to both to
-   * the NativeFunctionGrpcServer to be registered.
+   * this service. Note that each async gRPC service can only be registered
+   * once. Allows clients (V8 and arbitrary binaries) to invoke gRPC methods in
+   * the host process. Config has ownership of all registered services and
+   * associated factory functions, and passes pointers to both to the
+   * NativeFunctionGrpcServer to be registered.
    *
    * @param service
    * @param handlers
@@ -171,7 +227,12 @@ class Config {
   void RegisterService(std::unique_ptr<grpc::Service> service,
                        THandlers<TMetadata>&&... handlers) {
     services_.push_back(std::move(service));
-    (CreateFactory(handlers), ...);
+
+    const auto CreateFactoryWrapper = [&](auto&& handler) {
+      static constexpr bool is_callback_service = false;
+      CreateFactory(is_callback_service, handler);
+    };
+    (CreateFactoryWrapper(handlers), ...);
   }
 
   std::vector<FunctionBindingObjectPtr> GetFunctionBindings() const {
@@ -179,17 +240,57 @@ class Config {
                                                  function_bindings_v2_.end());
   }
 
-  std::vector<std::unique_ptr<grpc::Service>>& GetServices() {
-    return services_;
+  /**
+   * @brief Register the name of a RPC method for a registered service. Called
+   * by generated code. Allows clients to invoke rpc method on service via gRPC
+   * in UDF
+   *
+   * @param method_name
+   */
+  template <template <typename> typename THandler>
+  void RegisterRpcHandler(std::string_view method_name,
+                          THandler<TMetadata>&& handler) {
+    rpc_method_names_.emplace_back(method_name);
+    static constexpr bool is_callback_service = true;
+    CreateFactory(is_callback_service, handler);
   }
 
-  std::vector<grpc_server::FactoryFunction<TMetadata>>* GetFactories() {
-    return factories_.get();
+  std::vector<std::string> GetRpcMethodNames() const {
+    return rpc_method_names_;
+  }
+
+  std::vector<std::unique_ptr<grpc::Service>> ReleaseServices() {
+    services_.push_back(std::move(callback_service_));
+    return std::move(services_);
+  }
+
+  std::vector<grpc_server::FactoryFunction<TMetadata>>* ReleaseFactories() {
+    return factories_.release();
   }
 
   void SetLoggingFunction(LogCallback logging_func) {
+    logging_function_set = true;
     logging_func_ = std::move(logging_func);
   }
+
+  void ConfigureV8Compilers(V8CompilerOptions opts = V8CompilerOptions()) {
+    if (opts.enable_turbofan) {
+      v8_flags_.push_back("--turbofan");
+    }
+    if (opts.enable_maglev) {
+      v8_flags_.push_back("--maglev");
+    }
+    if (opts.enable_turboshaft) {
+      v8_flags_.push_back("--turboshaft");
+    }
+  }
+
+  /* @brief Set flags on Roma's V8 Instance. Compiler related flags should be
+   * set using ConfigureV8Compilers.
+   */
+  std::vector<std::string>& SetV8Flags() { return v8_flags_; }
+
+  const std::vector<std::string>& GetV8Flags() const { return v8_flags_; }
 
   const LogCallback& GetLoggingFunction() const { return logging_func_; }
 
@@ -226,11 +327,13 @@ class Config {
    * rpc method on a grpc::Service should create an associated factory function.
    */
   template <template <typename> typename THandler>
-  void CreateFactory(THandler<TMetadata>) {
+  void CreateFactory(bool is_callback_service, THandler<TMetadata>) {
     const size_t index = factories_->size();
+    grpc::Service* service_ptr =
+        is_callback_service ? callback_service_.get() : services_.back().get();
+
     factories_->push_back(
-        [service_ptr = services_.back().get(), factories_ptr = factories_.get(),
-         index](
+        [service_ptr, factories_ptr = factories_.get(), index](
             grpc::ServerCompletionQueue* completion_queue,
             metadata_storage::MetadataStorage<TMetadata>* metadata_storage) {
           new grpc_server::RequestHandlerImpl<TMetadata, THandler>(
@@ -246,8 +349,15 @@ class Config {
 
   std::vector<std::unique_ptr<grpc::Service>> services_;
   std::unique_ptr<std::vector<grpc_server::FactoryFunction<TMetadata>>>
-      factories_ = std::make_unique<
-          std::vector<grpc_server::FactoryFunction<TMetadata>>>();
+      factories_;
+  std::vector<std::string> rpc_method_names_;
+
+  // wasm_lazy_compilation disabled by default
+  std::vector<std::string> v8_flags_ = {"--no-wasm-lazy-compilation"};
+
+  using CallbackService =
+      privacy_sandbox::server_common::JSCallbackService::AsyncService;
+  std::unique_ptr<CallbackService> callback_service_;
 
   // default no-op logging implementation
   LogCallback logging_func_ = [](absl::LogSeverity severity,

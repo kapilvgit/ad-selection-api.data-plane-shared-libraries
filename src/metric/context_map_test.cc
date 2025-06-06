@@ -49,9 +49,7 @@ class TestMetricRouter {
     return absl::OkStatus();
   }
 
-  const telemetry::BuildDependentConfig& metric_config() const {
-    return metric_config_;
-  }
+  telemetry::BuildDependentConfig& metric_config() { return metric_config_; }
 
   telemetry::TelemetryConfig config_proto_;
   telemetry::BuildDependentConfig metric_config_;
@@ -102,6 +100,25 @@ TEST_F(ContextMapTest, CheckListOrderHistogram) {
                HasSubstr("kHistogram histogram"));
 }
 
+constexpr std::string_view kDefaultBuyers[] = {"buyer_1", "buyer_2"};
+constexpr Definition<int, Privacy::kImpacting, Instrument::kPartitionedCounter>
+    metric_1("m_1", "", "partition_type", 1, kDefaultBuyers, 1, 0);
+constexpr const DefinitionName* list[] = {&metric_1, &kIntExactCounter};
+constexpr absl::Span<const DefinitionName* const> list_span = list;
+
+TEST_F(ContextMapTest, CheckDropNoisyValuesProbability) {
+  telemetry::TelemetryConfig config_proto;
+  auto metric_config_1 = config_proto.add_metric();
+  metric_config_1->set_name("m_1");
+  metric_config_1->set_drop_noisy_values_probability(1.0);
+  auto config = std::make_unique<telemetry::BuildDependentConfig>(config_proto);
+  constexpr PrivacyBudget budget{/*epsilon*/ 5};
+
+  EXPECT_DEATH((GetContextMap<Foo, list_span>(std::move(config), nullptr, "",
+                                              "", budget)),
+               HasSubstr("m_1 drop_noisy_values_probability is out of range"));
+}
+
 TEST_F(ContextMapTest, OnlyCreateOneSafeMetric) {
   using TestContextMap = ContextMap<Foo, metric_list_span, TestMetricRouter>;
   TestContextMap context_map(std::make_unique<TestMetricRouter>());
@@ -123,24 +140,38 @@ constexpr absl::Span<const DefinitionName* const> unsafe_list_span =
 class MetricConfigTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    telemetry::TelemetryConfig config_proto;
-    config_proto.set_mode(telemetry::TelemetryConfig::PROD);
-    config_proto.add_metric()->set_name("kUnsafe1");
-    config_proto.add_metric()->set_name("kUnsafe2");
-    config_proto.add_metric()->set_name("not_defined");
-    metric_config_ =
-        std::make_unique<telemetry::BuildDependentConfig>(config_proto);
+    config_proto_.set_mode(telemetry::TelemetryConfig::PROD);
+    config_proto_.add_metric()->set_name("kUnsafe1");
+    config_proto_.add_metric()->set_name("kUnsafe2");
+    config_proto_.add_metric()->set_name("not_defined");
+    auto* proto1 = config_proto_.add_custom_udf_metric();
+    auto* proto2 = config_proto_.add_custom_udf_metric();
+    auto* proto3 = config_proto_.add_custom_udf_metric();
+    proto1->set_name("p1");
+    proto1->set_privacy_budget_weight(0.5);
+    config_proto_.add_custom_udf_metric()->set_name("p2");
+    proto2->set_name("h1");
+    proto2->set_privacy_budget_weight(0.5);
+    proto2->add_histogram_boundaries(0);
+    proto2->add_histogram_boundaries(1);
+    proto3->set_name("h2");
+    proto3->add_histogram_boundaries(0);
+    proto3->add_histogram_boundaries(1);
   }
 
-  std::unique_ptr<telemetry::BuildDependentConfig> metric_config_;
+  telemetry::TelemetryConfig config_proto_;
 };
 
 TEST_F(MetricConfigTest, PrivacyBudget) {
-  constexpr PrivacyBudget budget{/*epsilon*/ 5};
-  auto c = GetContextMap<Foo, unsafe_list_span>(*metric_config_, nullptr, "",
-                                                "", budget);
+  constexpr PrivacyBudget budget{/*epsilon*/ 10};
+  auto metric_config =
+      std::make_unique<telemetry::BuildDependentConfig>(config_proto_);
+  auto c = GetContextMap<Foo, unsafe_list_span>(std::move(metric_config),
+                                                nullptr, "", "", budget);
+  // privacy budget = epsilon/(CustomMetricsWeight() + accumulated weight) =
+  // 10/(3 + 2)
   EXPECT_DOUBLE_EQ(c->metric_router().dp().privacy_budget_per_weight().epsilon,
-                   2.5);
+                   2);
 }
 
 }  // namespace

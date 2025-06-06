@@ -17,6 +17,11 @@
 #include <memory>
 #include <utility>
 
+#include "absl/container/flat_hash_map.h"
+#include "src/roma/interface/roma.h"
+#include "src/roma/sandbox/constants/constants.h"
+#include "src/roma/sandbox/worker_api/sapi/worker_params.pb.h"
+
 namespace google::scp::roma::sandbox {
 namespace internal::request_converter {
 void AddMetadata(std::string version_string, std::string id,
@@ -58,10 +63,6 @@ void AddMetadata(std::string version_string, std::string id,
     params.set_code(std::move(request.js));
   } else {
     params.set_code(std::move(request.wasm));
-  }
-  if (const auto it = request.tags.find(google::scp::roma::kWasmCodeArrayName);
-      it != request.tags.end()) {
-    metadata[google::scp::roma::kWasmCodeArrayName] = it->second;
   }
   return params;
 }

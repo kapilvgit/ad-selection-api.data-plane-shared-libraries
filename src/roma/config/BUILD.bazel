@@ -15,20 +15,40 @@
 load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 
 cc_library(
+    name = "function_binding_object_v2",
+    hdrs = [
+        "function_binding_object_v2.h",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/roma/interface:function_binding_io_cc_proto",
+        "@com_google_absl//absl/container:flat_hash_map",
+    ],
+)
+
+cc_library(
     name = "config",
     hdrs = [
         "config.h",
-        "function_binding_object_v2.h",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":function_binding_object_v2",
+        "//src/roma/native_function_grpc_server:interface",
+        "//src/roma/native_function_grpc_server/proto:callback_service_grpc_proto",
+    ],
+)
+
+cc_library(
+    name = "type_converter",
+    hdrs = [
         "type_converter.h",
     ],
     visibility = ["//visibility:public"],
     deps = [
-        "//src/core/interface",
-        "//src/roma/interface:function_binding_io_cc_proto",
-        "//src/roma/native_function_grpc_server:interface",
         "@com_github_grpc_grpc//:grpc++",
+        "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/strings",
         "@v8//:v8_icu",
     ],
 )
@@ -39,11 +59,14 @@ cc_test(
     srcs = ["function_binding_v2_test.cc"],
     deps = [
         ":config",
-        "//src/core/interface",
+        ":function_binding_object_v2",
+        ":type_converter",
         "//src/util:process_util",
+        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/functional:bind_front",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest_main",
         "@v8//:v8_icu",
     ],
@@ -55,6 +78,7 @@ cc_test(
     srcs = ["config_log_test.cc"],
     deps = [
         ":config",
+        "@com_google_absl//absl/base:log_severity",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:scoped_mock_log",
         "@com_google_googletest//:gtest_main",
@@ -69,11 +93,8 @@ cc_test(
     tags = ["manual"],
     deps = [
         ":config",
-        "//src/core/interface",
-        "//src/util:process_util",
+        "//src/roma/interface:function_binding_io_cc_proto",
         "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/log:check",
-        "@com_google_absl//absl/status:statusor",
         "@com_google_googletest//:gtest_main",
         "@google_benchmark//:benchmark",
         "@v8//:v8_icu",
@@ -85,8 +106,8 @@ cc_test(
     size = "small",
     srcs = ["type_converter_test.cc"],
     deps = [
-        ":config",
-        "//src/core/interface",
+        ":type_converter",
+        "//src/roma/interface:function_binding_io_cc_proto",
         "//src/util:process_util",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log:check",

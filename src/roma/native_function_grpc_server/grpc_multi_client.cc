@@ -21,19 +21,17 @@
 
 #include <grpcpp/grpcpp.h>
 
-#include <google/protobuf/util/json_util.h>
-
-#include "absl/container/node_hash_set.h"
+#include "absl/base/log_severity.h"
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
 #include "absl/flags/usage.h"
 #include "absl/log/globals.h"
 #include "absl/log/initialize.h"
 #include "absl/log/log.h"
-#include "absl/strings/numbers.h"
+#include "absl/strings/str_cat.h"
 #include "src/roma/native_function_grpc_server/interface.h"
-#include "src/roma/native_function_grpc_server/proto/test_service.grpc.pb.h"
-#include "src/roma/native_function_grpc_server/proto/test_service.pb.h"
+#include "src/roma/native_function_grpc_server/proto/multi_service.grpc.pb.h"
+#include "src/roma/native_function_grpc_server/proto/multi_service.pb.h"
 
 ABSL_FLAG(std::string, server_address, "", "Address to connect to GRPC server");
 ABSL_FLAG(int32_t, id, -1, "Id of GRPC Client");
@@ -53,9 +51,9 @@ void LogOutput(const grpc::Status& status, std::string_view output) {
   }
 }
 
-bool SendRpc1(privacy_sandbox::server_common::MultiService::Stub* stub,
-              privacy_sandbox::server_common::TestMethod1Request& request) {
-  privacy_sandbox::server_common::TestMethod1Response response;
+bool SendRpc1(privacy_sandbox::multi_service::MultiService::Stub* stub,
+              privacy_sandbox::multi_service::TestMethod1Request& request) {
+  privacy_sandbox::multi_service::TestMethod1Response response;
   grpc::ClientContext context;
   context.set_wait_for_ready(true);
   context.AddMetadata(std::string(google::scp::roma::grpc_server::kUuidTag),
@@ -67,9 +65,9 @@ bool SendRpc1(privacy_sandbox::server_common::MultiService::Stub* stub,
   return status.ok();
 }
 
-bool SendRpc2(privacy_sandbox::server_common::MultiService::Stub* stub,
-              privacy_sandbox::server_common::TestMethod2Request& request) {
-  privacy_sandbox::server_common::TestMethod2Response response;
+bool SendRpc2(privacy_sandbox::multi_service::MultiService::Stub* stub,
+              privacy_sandbox::multi_service::TestMethod2Request& request) {
+  privacy_sandbox::multi_service::TestMethod2Response response;
   grpc::ClientContext context;
   context.set_wait_for_ready(true);
   context.AddMetadata(std::string(google::scp::roma::grpc_server::kUuidTag),
@@ -101,17 +99,17 @@ int main(int argc, char* argv[]) {
 
   std::shared_ptr<grpc::Channel> grpc_channel = grpc::CreateChannel(
       absl::GetFlag(FLAGS_server_address), grpc::InsecureChannelCredentials());
-  std::unique_ptr<privacy_sandbox::server_common::MultiService::Stub> stub(
-      privacy_sandbox::server_common::MultiService::NewStub(grpc_channel));
+  std::unique_ptr<privacy_sandbox::multi_service::MultiService::Stub> stub(
+      privacy_sandbox::multi_service::MultiService::NewStub(grpc_channel));
 
   LOG(INFO) << "Building Grpc TestMethodRequest [" << absl::GetFlag(FLAGS_id)
             << "]...";
 
-  privacy_sandbox::server_common::TestMethod1Request request1;
+  privacy_sandbox::multi_service::TestMethod1Request request1;
   request1.set_input("Hello ");
   request1.set_processing_delay_ms(absl::GetFlag(FLAGS_delay_ms));
 
-  privacy_sandbox::server_common::TestMethod2Request request2;
+  privacy_sandbox::multi_service::TestMethod2Request request2;
   request2.set_input("Hello ");
   request2.set_processing_delay_ms(absl::GetFlag(FLAGS_delay_ms));
 

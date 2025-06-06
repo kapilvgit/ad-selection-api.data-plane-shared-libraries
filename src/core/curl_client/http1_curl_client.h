@@ -19,6 +19,7 @@
 
 #include <memory>
 
+#include "absl/time/time.h"
 #include "src/core/common/operation_dispatcher/operation_dispatcher.h"
 #include "src/core/interface/async_context.h"
 #include "src/core/interface/async_executor_interface.h"
@@ -53,10 +54,6 @@ class Http1CurlClient : public HttpClientInterface {
           common::RetryStrategyOptions(common::RetryStrategyType::Exponential,
                                        kDefaultRetryStrategyDelayInMs,
                                        kDefaultRetryStrategyMaxRetries));
-
-  ExecutionResult Init() noexcept override;
-  ExecutionResult Run() noexcept override;
-  ExecutionResult Stop() noexcept override;
 
   ExecutionResult PerformRequest(
       AsyncContext<HttpRequest, HttpResponse>& http_context) noexcept override;
